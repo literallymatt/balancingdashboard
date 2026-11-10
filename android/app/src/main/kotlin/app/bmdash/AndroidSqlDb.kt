@@ -8,9 +8,27 @@ import bmdash.SqlDb
 import java.io.File
 
 /** SqlDb over android.database.sqlite. WAL mode lets dashboard queries run concurrently with an ingest. */
-class AndroidSqlDb(file: File) : SqlDb {
-    private val db: SQLiteDatabase = SQLiteDatabase.openOrCreateDatabase(file, null).also {
-        it.enableWriteAheadLogging()
+class AndroidSqlDb(file: File, schemaVersion: Int) : SqlDb {
+    private val db: SQLiteDatabase = open(file, schemaVersion)
+
+    companion object {
+        /**
+         * Opens the database, discarding it first if it was written by an older schema. Everything in it is
+         * re-downloadable, and an in-place migration would leave the old file's space unreclaimed.
+         */
+        private fun open(file: File, schemaVersion: Int): SQLiteDatabase {
+            var d = SQLiteDatabase.openOrCreateDatabase(file, null)
+            val hasTables = d.rawQuery("SELECT count(*) FROM sqlite_master WHERE type = 'table'", null)
+                .use { it.moveToFirst() && it.getLong(0) > 0 }
+            if (d.version < schemaVersion && hasTables) {
+                d.close()
+                SQLiteDatabase.deleteDatabase(file)
+                d = SQLiteDatabase.openOrCreateDatabase(file, null)
+            }
+            d.version = schemaVersion
+            d.enableWriteAheadLogging()
+            return d
+        }
     }
 
     private fun bind(p: SQLiteProgram, args: List<Any?>) {

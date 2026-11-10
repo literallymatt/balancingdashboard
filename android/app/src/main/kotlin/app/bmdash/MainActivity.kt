@@ -55,13 +55,14 @@ class MainActivity : Activity() {
         refreshDataIfStale()
     }
 
-    /** On launch, top up the last 90 days: fetches only days that are missing or were fetched before they settled. */
+    /** On launch, top up the last 30 days: fetches only days that are missing or were fetched before they settled. */
     private fun refreshDataIfStale() {
         Thread {
             try {
                 val end = Ingester.today()
-                if (Ingester.daysNeeded(Backend.db, end.minusDays(89), end, false).isNotEmpty()) {
-                    Backend.startIngest(this, end.minusDays(89), end, false)
+                val start = end.minusDays(Backend.DEFAULT_DAYS - 1L)
+                if (Ingester.daysNeeded(Backend.db, start, end, false).isNotEmpty()) {
+                    Backend.startIngest(this, start, end, false)
                 }
             } catch (_: Exception) { /* offline etc.: the Data view can retry */ }
         }.start()

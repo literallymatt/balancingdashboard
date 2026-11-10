@@ -3,20 +3,14 @@ package bmdash
 /** SQLite schema and day-level writes. One settlement day is replaced atomically. */
 object Store {
     private val DDL = listOf(
+        // One row per unit x period x direction x bid-offer pair. Kept deliberately slim: this is the
+        // table every chart reads, and a phone does not need the raw Elexon series that the UI never shows.
         """CREATE TABLE IF NOT EXISTS boav (
-            settlement_date TEXT NOT NULL, sp INTEGER, start_time TEXT, bm_unit TEXT, ngc_bm_unit TEXT,
-            lead_party TEXT, bm_unit_type TEXT, direction TEXT, pair INTEGER,
-            volume REAL, volume_original REAL, volume_tagged REAL, volume_repriced REAL, volume_orig_priced REAL,
+            settlement_date TEXT NOT NULL, sp INTEGER, bm_unit TEXT, lead_party TEXT, bm_unit_type TEXT,
+            direction TEXT, pair INTEGER, volume REAL, volume_original REAL, volume_tagged REAL,
             cashflow REAL, so_flag INTEGER, n_acceptances INTEGER)""",
         "CREATE INDEX IF NOT EXISTS boav_date ON boav(settlement_date)",
         "CREATE INDEX IF NOT EXISTS boav_unit ON boav(bm_unit, settlement_date)",
-        """CREATE TABLE IF NOT EXISTS acceptances (
-            settlement_date TEXT NOT NULL, sp_from INTEGER, sp_to INTEGER, time_from TEXT, time_to TEXT,
-            level_from REAL, level_to REAL, bm_unit TEXT, ngc_bm_unit TEXT, acceptance_number INTEGER,
-            acceptance_time TEXT, deemed_bo INTEGER, so_flag INTEGER, stor_flag INTEGER, rr_flag INTEGER,
-            amendment_flag TEXT)""",
-        "CREATE INDEX IF NOT EXISTS acc_unit ON acceptances(bm_unit, settlement_date)",
-        "CREATE INDEX IF NOT EXISTS acc_date ON acceptances(settlement_date)",
         """CREATE TABLE IF NOT EXISTS system_prices (
             settlement_date TEXT NOT NULL, sp INTEGER, start_time TEXT, ssp REAL, sbp REAL, niv REAL,
             price_derivation_code TEXT, accepted_offer_volume REAL, accepted_bid_volume REAL,
@@ -40,7 +34,7 @@ object Store {
     }
 
     private val TABLES = mapOf(
-        "boav" to 17, "acceptances" to 16, "system_prices" to 13, "disbsad" to 11,
+        "boav" to 13, "system_prices" to 13, "disbsad" to 11,
     )
 
     /** Replace everything held for one settlement day, atomically. */

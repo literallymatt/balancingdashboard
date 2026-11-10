@@ -593,7 +593,11 @@ async function viewUnit(main) {
   $('#day').onchange = (e) => update({ day: e.target.value }, true);
   loading($('#dayChart'), () => unitDay($('#dayChart'), $('#dayTable')));
   loading($('#accTable'), async () => {
-    const a = await api('acceptances', { unit: state.unit, from: state.from, to: state.to });
+    let a;
+    try { a = await api('acceptances', { unit: state.unit, from: state.from, to: state.to }); } catch (e) {
+      $('#accTable').innerHTML = `<div class="empty">Couldn't load acceptances (${esc(e.message)}). They are fetched live from Elexon, so check the connection.</div>`;
+      return;
+    }
     const ts = (v) => v ? new Date(v).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
     const yn = (v) => (v ? 'Yes' : '');
     table($('#accTable'), [
@@ -652,9 +656,9 @@ async function viewData(main) {
   const wasEmpty = !META.days.length;
   main.innerHTML = `
   <div class="card"><h2>Fetch data from Elexon</h2>
-    <div class="sub">Downloads bid/offer volumes and cashflows (four whole-day requests per day), plus acceptances, system prices and BSAD. Days already held are skipped unless they were fetched before the data settled.</div>
+    <div class="sub">Downloads bid/offer volumes and cashflows (four whole-day requests per day), plus acceptance flags, system prices and BSAD. Individual acceptances are fetched live when you open a unit. Days already held are skipped unless they were fetched before the data settled.</div>
     <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-top:12px">
-      <label class="small muted">From <input type="date" id="iFrom" value="${META.min ? addDays(META.min, -30) : addDays(today, -89)}"></label>
+      <label class="small muted">From <input type="date" id="iFrom" value="${META.min ? addDays(META.min, -30) : addDays(today, -29)}"></label>
       <label class="small muted">To <input type="date" id="iTo" value="${today}"></label>
       <label class="small"><input type="checkbox" id="iForce"> Re-fetch days already held</label>
       <button class="btn primary" id="iGo">Fetch</button>

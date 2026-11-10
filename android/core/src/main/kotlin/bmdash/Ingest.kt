@@ -1,6 +1,5 @@
 package bmdash
 
-import org.json.JSONObject
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -48,7 +47,13 @@ interface IngestControl {
 }
 
 /** Parallel ingestion of Balancing Mechanism data from Elexon into the SQLite store. */
-class Ingester(private val db: SqlDb, private val concurrency: Int = 8, private val parallelChunks: Int = 2) {
+class Ingester(
+    private val db: SqlDb,
+    private val concurrency: Int = 6,
+    private val parallelChunks: Int = 2,
+    /** Lets the Android app run downloads at background priority so the phone stays cool and responsive. */
+    private val threadFactory: java.util.concurrent.ThreadFactory = Executors.defaultThreadFactory(),
+) {
     val job = Job()
     /** Wall-clock milliseconds spent per phase (summed across threads); for profiling. */
     val timings = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicLong>()
@@ -64,8 +69,8 @@ class Ingester(private val db: SqlDb, private val concurrency: Int = 8, private 
             finishedAt = 0.0; last = ""
         }
         val api = Elexon(concurrency)
-        val http = Executors.newFixedThreadPool(concurrency)
-        val chunkPool = Executors.newFixedThreadPool(parallelChunks)
+        val http = Executors.newFixedThreadPool(concurrency, threadFactory)
+        val chunkPool = Executors.newFixedThreadPool(parallelChunks, threadFactory)
         try {
             Store.init(db)
             val days = daysNeeded(db, a, b, force).sortedByDescending { it.toEpochDay() } // newest first
@@ -94,24 +99,23 @@ class Ingester(private val db: SqlDb, private val concurrency: Int = 8, private 
     // ------------------------------------------------------------ reference data
 
     private fun ingestUnits(api: Elexon) {
-        val raw = api.get("/reference/bmunits/all")
-        val rows = ArrayList<List<Any?>>(raw.length())
-        raw.forEachObject { u ->
-            val id = u.str("elexonBmUnit") ?: return@forEachObject
-            rows.add(listOf(
+        val rows = api.read("/reference/bmunits/all", emptyList(), { LinkedHashMap<String, List<Any?>>() }) { acc, u ->
+            val id = u.str("elexonBmUnit")
+            // Elexon sometimes lists a unit twice (e.g. T_WLNYO-4): keep the first, as the Python ingest does.
+            if (!id.isNullOrEmpty() && id !in acc) acc[id] = listOf(
                 id, u.str("nationalGridBmUnit"), u.str("bmUnitName"), u.str("fuelType"), classifyTech(u),
                 u.str("leadPartyName"), u.str("leadPartyId"), u.str("bmUnitType"), u.str("gspGroupName"),
                 u.dbl("generationCapacity"), u.dbl("demandCapacity"), u.str("interconnectorId"),
-            ))
+            )
         }
-        Store.writeUnits(db, rows)
+        Store.writeUnits(db, rows.values.toList())
     }
 
     // ------------------------------------------------------------ a chunk of consecutive-ish days
 
     private fun ingestChunk(api: Elexon, http: ExecutorService, chunk: List<LocalDate>, onDay: ((String) -> Unit)?) {
         // Acceptances and non-BM actions come as one multi-day stream request per chunk.
-        var acc: Map<String, List<List<Any?>>>
+        var acc: Map<String, Map<String, PeriodFlags>>
         var bsad: Map<String, List<List<Any?>>>
         try {
             val lo = dayBoundsUtc(chunk.last()).first.minusSeconds(6 * 3600) // chunks are newest-first
@@ -128,37 +132,25 @@ class Ingester(private val db: SqlDb, private val concurrency: Int = 8, private 
             val ds = d.toString()
             try {
                 val boav = timed("day: boav fetch+parse") { fetchBoav(api, http, d) }
-                val accRows = acc[ds].orEmpty()
+                val flags = acc[ds].orEmpty()
                 val prices = timed("day: prices") { fetchPrices(api, d) }
-                // Flag unit-periods touched by an SO-flagged acceptance and count distinct acceptances.
-                val so = HashMap<String, Boolean>()
-                val count = HashMap<String, MutableSet<Long>>()
-                for (r in accRows) {
-                    val spFrom = (r[1] as Number).toInt()
-                    val spTo = maxOf((r[2] as Number).toInt(), spFrom)
-                    for (sp in spFrom..spTo) {
-                        val k = "$sp|${r[7]}"
-                        so[k] = (so[k] ?: false) || (r[12] == 1)
-                        count.getOrPut(k) { HashSet() }.add((r[9] as Number).toLong())
-                    }
-                }
                 val boavRows = ArrayList<List<Any?>>(boav.size)
                 for (r in boav.values) {
                     // "Original" is zero for SO-flagged actions while "Tagged" carries them; the larger of the two
                     // reconciles with DISEBSP total accepted volume.
                     r.volume = if (Math.abs(r.volOriginal) >= Math.abs(r.volTagged)) r.volOriginal else r.volTagged
                     val k = "${r.sp}|${r.unit}"
-                    r.so = so[k] ?: false
-                    r.nAcc = count[k]?.size ?: 0
+                    r.so = flags[k]?.so ?: false
+                    r.nAcc = flags[k]?.numbers?.size ?: 0
                     boavRows.add(r.toRow())
                 }
                 timed("day: sqlite write") { Store.writeDay(db, ds, linkedMapOf(
-                    "acceptances" to accRows, "system_prices" to prices,
+                    "system_prices" to prices,
                     "disbsad" to bsad[ds].orEmpty(), "boav" to boavRows,
                 ), System.currentTimeMillis() / 1000) }
                 job.rows.addAndGet(boavRows.size)
                 job.last = ds
-                onDay?.invoke("$ds  ${boavRows.size} bid/offer rows  ${accRows.size} acceptances")
+                onDay?.invoke("$ds  ${boavRows.size} bid/offer rows")
             } catch (e: Exception) {
                 job.failed.add(ds)
                 job.error = "$ds: ${e.message}"
@@ -171,50 +163,55 @@ class Ingester(private val db: SqlDb, private val concurrency: Int = 8, private 
 
     // ------------------------------------------------------------ fetchers
 
-    private fun fetchAcceptances(api: Elexon, chunk: List<LocalDate>, lo: Instant, hi: Instant): Map<String, List<List<Any?>>> {
-        val raw = timed("boalf http+parse") { api.get("/datasets/BOALF/stream", listOf("from" to iso(lo), "to" to iso(hi))) }
+    private class Seen { val keys = HashSet<String>(); val out = HashMap<String, MutableList<List<Any?>>>() }
+
+    /** For one (settlement period, unit): whether any acceptance carried the SO flag, and which acceptances touched it. */
+    class PeriodFlags { var so = false; val numbers = HashSet<Long>(2) }
+
+    /**
+     * Streams the acceptances for a chunk and reduces them to per-period flags, discarding the records themselves:
+     * the dashboard only needs "SO-flagged?" and "how many acceptances" per unit-period (individual acceptances
+     * are fetched live for the one unit being viewed), which keeps ~80% of the data off the phone.
+     */
+    private fun fetchAcceptances(api: Elexon, chunk: List<LocalDate>, lo: Instant, hi: Instant): Map<String, Map<String, PeriodFlags>> {
         val wanted = chunk.map { it.toString() }.toSet()
-        val seen = HashSet<String>()
-        val out = HashMap<String, MutableList<List<Any?>>>()
-        raw.forEachObject { r ->
-            val ds = r.str("settlementDate")
-            if (ds == null || ds !in wanted) return@forEachObject
-            val key = listOf(r.str("bmUnit"), r.opt("acceptanceNumber"), r.str("timeFrom"), r.str("timeTo"),
-                r.opt("levelFrom"), r.opt("levelTo")).joinToString("|")
-            if (!seen.add(key)) return@forEachObject
-            out.getOrPut(ds) { ArrayList() }.add(listOf(
-                ds, r.int("settlementPeriodFrom"), r.int("settlementPeriodTo"),
-                r.str("timeFrom"), r.str("timeTo"), r.dbl("levelFrom"), r.dbl("levelTo"),
-                r.str("bmUnit"), r.str("nationalGridBmUnit"), r.optLong("acceptanceNumber"),
-                r.str("acceptanceTime"), r.flag("deemedBoFlag"), r.flag("soFlag"), r.flag("storFlag"),
-                r.flag("rrFlag"), r.str("amendmentFlag"),
-            ))
+        return timed("boalf http+parse") {
+            api.read("/datasets/BOALF/stream", listOf("from" to iso(lo), "to" to iso(hi)),
+                { HashMap<String, HashMap<String, PeriodFlags>>() }) { out, r ->
+                val ds = r.str("settlementDate")
+                val unit = r.str("bmUnit")
+                val from = r.int("settlementPeriodFrom")
+                if (ds != null && ds in wanted && unit != null && from != null) {
+                    val to = maxOf(r.int("settlementPeriodTo") ?: from, from)
+                    val num = r.long("acceptanceNumber") ?: 0L
+                    val so = r["soFlag"] == true
+                    val periods = out.getOrPut(ds) { HashMap() }
+                    for (sp in from..to) {
+                        val f = periods.getOrPut("$sp|$unit") { PeriodFlags() }
+                        if (so) f.so = true
+                        f.numbers.add(num)
+                    }
+                }
+            }
         }
-        return out
     }
 
     private fun fetchDisbsad(api: Elexon, chunk: List<LocalDate>, lo: Instant, hi: Instant): Map<String, List<List<Any?>>> {
-        val raw = api.get("/datasets/DISBSAD/stream", listOf("from" to iso(lo), "to" to iso(hi)))
         val wanted = chunk.map { it.toString() }.toSet()
-        val seen = HashSet<String>()
-        val out = HashMap<String, MutableList<List<Any?>>>()
-        raw.forEachObject { r ->
+        return api.read("/datasets/DISBSAD/stream", listOf("from" to iso(lo), "to" to iso(hi)), { Seen() }) { a, r ->
             val ds = r.str("settlementDate")
-            if (ds == null || ds !in wanted) return@forEachObject
-            if (!seen.add("$ds|${r.opt("settlementPeriod")}|${r.opt("id")}")) return@forEachObject
-            out.getOrPut(ds) { ArrayList() }.add(listOf(
-                ds, r.int("settlementPeriod"), r.int("id"), r.dbl("cost"), r.dbl("volume"), r.flag("soFlag"),
-                r.flag("storFlag"), r.str("partyId"), r.str("assetId"), r.flag("isTendered"), r.str("service"),
-            ))
-        }
-        return out
+            if (ds != null && ds in wanted && a.keys.add("$ds|${r["settlementPeriod"]}|${r["id"]}")) {
+                a.out.getOrPut(ds) { ArrayList() }.add(listOf(
+                    ds, r.int("settlementPeriod"), r.int("id"), r.dbl("cost"), r.dbl("volume"), r.flag("soFlag"),
+                    r.flag("storFlag"), r.str("partyId"), r.str("assetId"), r.flag("isTendered"), r.str("service"),
+                ))
+            }
+        }.out
     }
 
-    private fun fetchPrices(api: Elexon, d: LocalDate): List<List<Any?>> {
-        val raw = api.get("/balancing/settlement/system-prices/$d", listOf("format" to "json"))
-        val out = ArrayList<List<Any?>>()
-        raw.forEachObject { r ->
-            out.add(listOf(
+    private fun fetchPrices(api: Elexon, d: LocalDate): List<List<Any?>> =
+        api.read("/balancing/settlement/system-prices/$d", listOf("format" to "json"), { ArrayList<List<Any?>>() }) { acc, r ->
+            acc.add(listOf(
                 r.str("settlementDate"), r.int("settlementPeriod"), r.str("startTime"),
                 r.dbl("systemSellPrice"), r.dbl("systemBuyPrice"), r.dbl("netImbalanceVolume"),
                 r.str("priceDerivationCode"), r.dbl("totalAcceptedOfferVolume"), r.dbl("totalAcceptedBidVolume"),
@@ -222,63 +219,57 @@ class Ingester(private val db: SqlDb, private val concurrency: Int = 8, private 
                 r.dbl("totalAdjustmentSellVolume"), r.dbl("totalAdjustmentBuyVolume"),
             ))
         }
-        return out
-    }
 
     class BoavRow(
-        val date: String, val sp: Int, val start: String?, val unit: String, val ngc: String?,
-        val party: String?, val type: String?, val direction: String, val pair: Int,
+        val date: String, val sp: Int, val unit: String, val party: String?, val type: String?,
+        val direction: String, val pair: Int,
     ) {
-        var volume = 0.0; var volOriginal = 0.0; var volTagged = 0.0; var volRepriced = 0.0
-        var volOrigPriced = 0.0; var cash = 0.0; var so = false; var nAcc = 0
-        fun toRow(): List<Any?> = listOf(date, sp, start, unit, ngc, party, type, direction, pair, volume,
-            volOriginal, volTagged, volRepriced, volOrigPriced, cash, if (so) 1 else 0, nAcc)
+        var volume = 0.0; var volOriginal = 0.0; var volTagged = 0.0; var cash = 0.0
+        var so = false; var nAcc = 0
+        fun toRow(): List<Any?> = listOf(date, sp, unit, party, type, direction, pair, volume,
+            volOriginal, volTagged, cash, if (so) 1 else 0, nAcc)
     }
+
+    /** One whole-day request (volumes or cashflows, one direction), reduced to compact rows as it streams in. */
+    private fun fetchBoavPart(api: Elexon, path: String, direction: String, isVolume: Boolean, ds: String): LinkedHashMap<String, BoavRow> =
+        api.read(path, listOf("format" to "json"), { LinkedHashMap<String, BoavRow>() }) { rows, r ->
+            val unit = r.str("bmUnit")
+            if (!unit.isNullOrEmpty()) {
+                val setter: ((BoavRow, Double) -> Unit)? = if (isVolume) when (r.str("dataType")) {
+                    "Original" -> { row, v -> row.volOriginal = v }
+                    "Tagged" -> { row, v -> row.volTagged = v }
+                    else -> null
+                } else { row, v -> row.cash = v }
+                val pairs = r[if (isVolume) "pairVolumes" else "bidOfferPairCashflows"] as? Map<*, *>
+                if (setter != null && pairs != null) {
+                    for ((key, pair) in PAIR_KEYS) {
+                        val v = (pairs[key] as? Number)?.toDouble() ?: 0.0
+                        if (v == 0.0 || v.isNaN()) continue
+                        val sp = r.int("settlementPeriod") ?: 0
+                        val row = rows.getOrPut("$sp|$unit|$direction|$pair") {
+                            BoavRow(ds, sp, unit, r.str("leadPartyName"), r.str("bmUnitType"), direction, pair)
+                        }
+                        setter(row, v)
+                    }
+                }
+            }
+        }
 
     /** Volumes + cashflows for every unit and settlement period, both directions: four whole-day requests. */
     private fun fetchBoav(api: Elexon, http: ExecutorService, d: LocalDate): Map<String, BoavRow> {
         val ds = d.toString()
         val base = "/balancing/settlement/indicative"
-        val jobs = ArrayList<Triple<String, Boolean, Future<org.json.JSONArray>>>()
+        // Fixed order (as the Python ingest) so the first-seen descriptive fields are deterministic.
+        val parts = ArrayList<Pair<Boolean, Future<LinkedHashMap<String, BoavRow>>>>()
         for (direction in listOf("bid", "offer")) {
-            jobs.add(Triple(direction, true, http.submit(Callable { api.get("$base/volumes/all/$direction/$ds", listOf("format" to "json")) })))
-            jobs.add(Triple(direction, false, http.submit(Callable { api.get("$base/cashflows/all/$direction/$ds", listOf("format" to "json")) })))
+            parts.add(true to http.submit(Callable { fetchBoavPart(api, "$base/volumes/all/$direction/$ds", direction, true, ds) }))
+            parts.add(false to http.submit(Callable { fetchBoavPart(api, "$base/cashflows/all/$direction/$ds", direction, false, ds) }))
         }
         val rows = LinkedHashMap<String, BoavRow>()
-        // Processed in a fixed order (as the Python ingest does) so the first-seen descriptive fields are deterministic.
-        for ((direction, isVolume, fut) in jobs) {
-            val data = fut.get()
-            data.forEachObject { r ->
-                val unit = r.str("bmUnit")
-                if (unit.isNullOrEmpty()) return@forEachObject
-                val setter: ((BoavRow, Double) -> Unit)?
-                val pairs: JSONObject?
-                if (isVolume) {
-                    setter = when (r.str("dataType")) {
-                        "Original" -> { row, v -> row.volOriginal = v }
-                        "Tagged" -> { row, v -> row.volTagged = v }
-                        "Re-priced" -> { row, v -> row.volRepriced = v }
-                        "Original-Priced" -> { row, v -> row.volOrigPriced = v }
-                        else -> null
-                    }
-                    pairs = r.optJSONObject("pairVolumes")
-                } else {
-                    setter = { row, v -> row.cash = v }
-                    pairs = r.optJSONObject("bidOfferPairCashflows")
-                }
-                if (setter == null || pairs == null) return@forEachObject
-                for ((key, pair) in PAIR_KEYS) {
-                    val v = pairs.optDouble(key, 0.0)
-                    if (v == 0.0 || v.isNaN()) continue
-                    val sp = r.optInt("settlementPeriod")
-                    val k = "$sp|$unit|$direction|$pair"
-                    val row = rows.getOrPut(k) {
-                        BoavRow(ds, sp, r.str("startTime"), unit, r.str("nationalGridBmUnit"),
-                            r.str("leadPartyName"), r.str("bmUnitType"), direction, pair)
-                    }
-                    setter(row, v)
-                }
-            }
+        for ((isVolume, fut) in parts) {
+            val part = fut.get()
+            if (isVolume) rows.putAll(part)
+            else for ((k, row) in part) { val ex = rows[k]; if (ex == null) rows[k] = row else ex.cash = row.cash }
         }
         return rows
     }
@@ -286,6 +277,7 @@ class Ingester(private val db: SqlDb, private val concurrency: Int = 8, private 
     companion object {
         const val SETTLE_DAYS = 5L
         const val CHUNK_DAYS = 3
+        const val REFETCH_AFTER_SECONDS = 6 * 3600L
         val LONDON: ZoneId = ZoneId.of("Europe/London")
         val PAIR_KEYS: List<Pair<String, Int>> =
             listOf("negative", "positive").flatMap { sign -> (1..6).map { n -> "$sign$n" to if (sign == "positive") n else -n } }
@@ -309,7 +301,7 @@ class Ingester(private val db: SqlDb, private val concurrency: Int = 8, private 
 
         /** Coarse technology label. Elexon's fuelType is null for most non-transmission units, so
          *  batteries are inferred from the unit name / NESO id pattern (heuristic). */
-        fun classifyTech(u: JSONObject): String {
+        fun classifyTech(u: Map<String, Any?>): String {
             val fuel = u.str("fuelType")
             if (!u.str("interconnectorId").isNullOrEmpty() || (fuel ?: "").startsWith("INT") ||
                 (u.str("elexonBmUnit") ?: "").startsWith("I_")) return "Interconnector"
@@ -325,6 +317,7 @@ class Ingester(private val db: SqlDb, private val concurrency: Int = 8, private 
         /** Days in [a, b] not held yet, or fetched before their data had settled. */
         fun daysNeeded(db: SqlDb, a: LocalDate, b: LocalDate, force: Boolean): List<LocalDate> {
             val held = Store.coverage(db)
+            val nowEpoch = System.currentTimeMillis() / 1000
             val t = today()
             val last = if (b.isAfter(t)) t else b
             val out = ArrayList<LocalDate>()
@@ -333,8 +326,10 @@ class Ingester(private val db: SqlDb, private val concurrency: Int = 8, private 
                 val fetched = held[d.toString()]
                 if (force || fetched == null) out.add(d)
                 else {
+                    // Re-fetch days fetched before they settled, but at most every few hours: opening the app
+                    // repeatedly must not re-download (and re-parse) the same recent days each time.
                     val settledAt = d.plusDays(SETTLE_DAYS).atStartOfDay(LONDON).toEpochSecond()
-                    if (fetched < settledAt) out.add(d)
+                    if (fetched < settledAt && nowEpoch - fetched > REFETCH_AFTER_SECONDS) out.add(d)
                 }
                 d = d.plusDays(1)
             }

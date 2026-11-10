@@ -20,10 +20,11 @@ class IngestService : Service() {
         nm.createNotificationChannel(NotificationChannel(CHANNEL, "Data download", NotificationManager.IMPORTANCE_LOW))
         startForeground(ID, notification("Starting download…", 0, 0), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
 
-        val a = LocalDate.parse(intent?.getStringExtra("start") ?: LocalDate.now().minusDays(29).toString())
+        val a = LocalDate.parse(intent?.getStringExtra("start") ?: LocalDate.now().minusDays(Backend.DEFAULT_DAYS - 1L).toString())
         val b = LocalDate.parse(intent?.getStringExtra("end") ?: LocalDate.now().toString())
         val force = intent?.getBooleanExtra("force", false) ?: false
         thread(name = "bmdash-ingest") {
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
             try {
                 Backend.ingester.run(a, b, force) {
                     val j = Backend.ingester.job
