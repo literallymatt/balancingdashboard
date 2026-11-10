@@ -141,14 +141,14 @@ async def _fetch_disbsad(api: Elexon, d: date) -> list[dict]:
 
 
 async def _fetch_boav(api: Elexon, d: date) -> dict[tuple, dict]:
-    """Volumes + cashflows for every unit, for every settlement period, both directions."""
+    """Volumes + cashflows for every unit and settlement period, both directions.
+    Uses Elexon's whole-day endpoints: four requests per settlement day."""
     ds = d.isoformat()
     base = "/balancing/settlement/indicative"
     jobs = []
-    for sp in range(1, periods_in_day(d) + 1):
-        for direction in ("bid", "offer"):
-            jobs.append((direction, "v", api.get(f"{base}/volumes/all/{direction}/{ds}/{sp}", {"format": "json"})))
-            jobs.append((direction, "c", api.get(f"{base}/cashflows/all/{direction}/{ds}/{sp}", {"format": "json"})))
+    for direction in ("bid", "offer"):
+        jobs.append((direction, "v", api.get(f"{base}/volumes/all/{direction}/{ds}", {"format": "json"})))
+        jobs.append((direction, "c", api.get(f"{base}/cashflows/all/{direction}/{ds}", {"format": "json"})))
     results = await asyncio.gather(*(j[2] for j in jobs))
 
     rows: dict[tuple, dict] = {}
