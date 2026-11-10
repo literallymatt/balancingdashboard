@@ -9,6 +9,29 @@ uv run bmdash ingest --days 90        # backfill (skips days already held)
 uv run bmdash serve                   # http://127.0.0.1:8780
 ```
 
+### Without uv
+
+Needs Python 3.12 or newer. From the project root:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate              # Windows: .venv\Scripts\activate
+pip install --upgrade pip              # older pip can't do editable installs of this project
+pip install -e .
+```
+
+Then run the same commands without `uv run`:
+
+```bash
+bmdash ingest --days 90
+bmdash serve
+```
+
+Dependency versions aren't pinned this way (`uv.lock` is uv-only), so you get the latest
+versions that match `pyproject.toml`.
+
+### Options
+
 `bmdash ingest --from 2025-01-01 --to 2025-12-31` fetches an explicit range; `--force` re-fetches.
 The Data tab in the dashboard can start the same fetch and shows coverage.
 
