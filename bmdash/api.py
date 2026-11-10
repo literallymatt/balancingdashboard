@@ -297,7 +297,7 @@ async def unit_day(bm_unit: str, d: date = Query(alias="date")):
                WHERE bm_unit = ? AND settlement_date = ? ORDER BY acceptance_time, acceptance_number, time_from""",
             [bm_unit, d])
     per = q("""SELECT sp, direction, pair, volume, cashflow, so_flag FROM boav
-               WHERE bm_unit = ? AND settlement_date = ? ORDER BY sp, pair""", [bm_unit, d])
+               WHERE bm_unit = ? AND settlement_date = ? ORDER BY sp, pair, direction""", [bm_unit, d])
     return {**live, "acceptances": _clean(acc), "periods": per}
 
 
@@ -321,6 +321,12 @@ async def start_ingest(req: IngestRequest):
     JOB.running = True
     asyncio.get_running_loop().create_task(ingest.run(req.start, req.end, force=req.force, job=JOB))
     return JOB.as_dict()
+
+
+@app.get("/api/ingest/start")
+async def start_ingest_get(start: date, end: date, force: bool = False):
+    """GET form of POST /api/ingest (the Android WebView cannot send request bodies to its in-app backend)."""
+    return await start_ingest(IngestRequest(start=start, end=end, force=force))
 
 
 @app.get("/api/ingest")

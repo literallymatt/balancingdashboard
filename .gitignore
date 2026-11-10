@@ -2,3 +2,10 @@ data/
 .venv/
 __pycache__/
 *.pyc
+
+android/.gradle/
+android/build/
+android/*/build/
+android/local.properties
+*.sqlite*
+.kotlin/

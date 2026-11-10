@@ -62,10 +62,12 @@ def classify_tech(u: dict) -> str:
 
 async def ingest_units(api: Elexon) -> int:
     raw = await api.get("/reference/bmunits/all")
-    rows = []
+    rows, seen = [], set()
     for u in raw:
-        if not u.get("elexonBmUnit"):
+        # Elexon occasionally lists a unit twice (e.g. T_WLNYO-4); keep one row so joins don't double-count.
+        if not u.get("elexonBmUnit") or u["elexonBmUnit"] in seen:
             continue
+        seen.add(u["elexonBmUnit"])
         rows.append({
             "bm_unit": u["elexonBmUnit"], "ngc_bm_unit": u.get("nationalGridBmUnit"),
             "name": u.get("bmUnitName"), "fuel_type": u.get("fuelType"), "tech": classify_tech(u),
@@ -141,14 +143,14 @@ async def _fetch_disbsad(api: Elexon, d: date) -> list[dict]:
 
 
 async def _fetch_boav(api: Elexon, d: date) -> dict[tuple, dict]:
-    """Volumes + cashflows for every unit, for every settlement period, both directions."""
+    """Volumes + cashflows for every unit and settlement period, both directions.
+    Uses Elexon's whole-day endpoints: four requests per settlement day."""
     ds = d.isoformat()
     base = "/balancing/settlement/indicative"
     jobs = []
-    for sp in range(1, periods_in_day(d) + 1):
-        for direction in ("bid", "offer"):
-            jobs.append((direction, "v", api.get(f"{base}/volumes/all/{direction}/{ds}/{sp}", {"format": "json"})))
-            jobs.append((direction, "c", api.get(f"{base}/cashflows/all/{direction}/{ds}/{sp}", {"format": "json"})))
+    for direction in ("bid", "offer"):
+        jobs.append((direction, "v", api.get(f"{base}/volumes/all/{direction}/{ds}", {"format": "json"})))
+        jobs.append((direction, "c", api.get(f"{base}/cashflows/all/{direction}/{ds}", {"format": "json"})))
     results = await asyncio.gather(*(j[2] for j in jobs))
 
     rows: dict[tuple, dict] = {}

@@ -18,6 +18,7 @@
   }
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html, body { margin: 0; }
 body { background: var(--page); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
 a { color: inherit; }
@@ -98,3 +99,35 @@ tbody tr.click:hover { background: var(--wash); }
 .tt .r span { color: var(--ink2); flex: 1; }
 .tt .r b { font-variant-numeric: tabular-nums; }
 .tt .tot { border-top: 1px solid var(--grid); margin-top: 4px; padding-top: 4px; }
+
+/* ---- phones / narrow windows ---- */
+@media (max-width: 700px) {
+  body { font-size: 14px; -webkit-text-size-adjust: 100%; }
+  .top { flex-wrap: wrap; gap: 2px 8px; padding: 8px 12px 6px; }
+  .brand { font-size: 15px; }
+  .top .spacer { display: none; }
+  #coverage { order: 3; flex-basis: 100%; font-size: 11px; }
+  nav { margin-left: auto; }
+  nav a { padding: 8px 12px; }
+  .filters { position: static; padding: 8px 12px; gap: 8px 10px; }
+  .seg button { padding: 8px 11px; }
+  .filters label { display: flex; align-items: center; gap: 4px; }
+  input[type=date] { padding: 6px 6px; max-width: 150px; }
+  select, input { padding: 6px 8px; }
+  main { padding: 10px 10px 48px; }
+  .grid { gap: 10px; }
+  .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-bottom: 10px; }
+  .cols2 { grid-template-columns: minmax(0, 1fr); margin-top: 10px; }
+  .card { padding: 12px; border-radius: 10px; }
+  .kpi .value { font-size: 20px; }
+  .card-head .controls { margin-left: 0; width: 100%; }
+  .chart { height: 280px; }
+  .chart.tall { height: 340px; }
+  .chart.short { height: 220px; }
+  .table-wrap { max-height: 70vh; }
+  th, td { padding: 8px 8px; }
+  .unit-head { gap: 4px 16px; }
+  .unit-head h1 { font-size: 18px; flex-basis: 100%; }
+  .months { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+  th.hide-sm, td.hide-sm { display: none; }
+}
