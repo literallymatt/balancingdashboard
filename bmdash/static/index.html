@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GB Balancing Mechanism</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">GB Balancing Mechanism</div>
+  <nav id="nav">
+    <a href="#/overview" data-view="overview">Overview</a>
+    <a href="#/units" data-view="units">Units</a>
+    <a href="#/data" data-view="data">Data</a>
+  </nav>
+  <div class="spacer"></div>
+  <div id="coverage" class="muted small"></div>
+</header>
+
+<div class="filters" id="filterbar">
+  <div class="seg" id="presets"></div>
+  <label class="small muted">From <input type="date" id="from"></label>
+  <label class="small muted">To <input type="date" id="to"></label>
+  <label class="small muted">Granularity
+    <select id="bucket">
+      <option value="auto">Auto</option>
+      <option value="sp">Settlement period</option>
+      <option value="hour">Hour</option>
+      <option value="day">Day</option>
+      <option value="week">Week</option>
+      <option value="month">Month</option>
+      <option value="tod">Time-of-day profile</option>
+    </select>
+  </label>
+  <div id="chips"></div>
+</div>
+
+<main id="main"></main>
+<div id="tooltip-root"></div>
+
+<script src="/static/vendor/echarts.min.js"></script>
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>

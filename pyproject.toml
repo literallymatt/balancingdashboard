@@ -1,0 +1,25 @@
+[project]
+name = "bmdash"
+version = "0.1.0"
+description = "Drill-down dashboard for GB Balancing Mechanism costs (Elexon BMRS)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "duckdb>=1.1",
+    "fastapi>=0.115",
+    "httpx>=0.27",
+    "pyarrow>=18",
+    "pytz>=2026.6",
+    "tzdata>=2024.1",
+    "uvicorn>=0.30",
+]
+
+[project.scripts]
+bmdash = "bmdash.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# Own workspace root so the parent folder's uv workspace is not picked up.
+[tool.uv.workspace]
