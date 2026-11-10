@@ -1,9 +1,7 @@
 package bmdash
 
-import org.json.JSONArray
-import org.json.JSONObject
-import java.io.ByteArrayOutputStream
 import java.io.IOException
+import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
@@ -11,20 +9,27 @@ import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.zip.GZIPInputStream
 
-/** Blocking client for the Elexon Insights (BMRS) API with bounded parallelism and retries. */
+/**
+ * Blocking client for the Elexon Insights (BMRS) API with bounded parallelism and retries.
+ * Responses are stream-parsed record by record: memory use does not depend on response size.
+ */
 class Elexon(concurrency: Int = 8, private val retries: Int = 6) {
     private val gate = Semaphore(concurrency)
     private val counter = AtomicInteger()
     val requests: Int get() = counter.get()
 
-    /** GET a path and return its list of records (empty when Elexon has no data). */
-    fun get(path: String, params: List<Pair<String, String>> = emptyList()): JSONArray {
+    /**
+     * GET a path and feed each record to [onRecord] together with an accumulator. A fresh accumulator is
+     * created for every attempt, so a retry after a mid-stream failure never double-counts records.
+     * A 404 yields an empty accumulator (Elexon has no data).
+     */
+    fun <T> read(path: String, params: List<Pair<String, String>>, newAcc: () -> T,
+                 onRecord: (T, Map<String, Any?>) -> Unit): T {
         val qs = params.joinToString("&") { (k, v) -> "${enc(k)}=${enc(v)}" }
         val url = URL(BASE + path + if (qs.isEmpty()) "" else "?$qs")
         var last: Exception? = null
         for (attempt in 0 until retries) {
-            var status = -1
-            var body: String? = null
+            var retryable = true
             gate.acquire()
             try {
                 counter.incrementAndGet()
@@ -35,13 +40,18 @@ class Elexon(concurrency: Int = 8, private val retries: Int = 6) {
                     c.setRequestProperty("Accept", "application/json")
                     c.setRequestProperty("Accept-Encoding", "gzip")
                     c.setRequestProperty("User-Agent", "bmdash-android/0.1")
-                    status = c.responseCode
-                    if (status == 200) {
-                        val raw = c.inputStream
-                        val ins = if ("gzip".equals(c.contentEncoding, true)) GZIPInputStream(raw) else raw
-                        val out = ByteArrayOutputStream(256 * 1024)
-                        ins.use { it.copyTo(out) }
-                        body = out.toString("UTF-8")
+                    val status = c.responseCode
+                    when {
+                        status == 200 -> {
+                            val raw = c.inputStream
+                            val ins = if ("gzip".equals(c.contentEncoding, true)) GZIPInputStream(raw, 32 * 1024) else raw
+                            val acc = newAcc()
+                            InputStreamReader(ins, Charsets.UTF_8).use { JsonReader(it).streamRecords { rec -> onRecord(acc, rec) } }
+                            return acc
+                        }
+                        status == 404 -> return newAcc()
+                        status in RETRY -> last = IOException("Elexon $status for $path")
+                        else -> { retryable = false; last = IOException("Elexon $status for $path") }
                     }
                 } finally {
                     c.disconnect()
@@ -51,21 +61,15 @@ class Elexon(concurrency: Int = 8, private val retries: Int = 6) {
             } finally {
                 gate.release()
             }
-            when {
-                status == 200 && body != null -> return parse(body)
-                status == 404 -> return JSONArray()
-                status in RETRY || status == -1 -> if (status != -1) last = IOException("Elexon $status for $path")
-                else -> throw IOException("Elexon $status for $path")
-            }
-            Thread.sleep((minOf(30_000L, 500L * (1L shl attempt)) + (Math.random() * 300).toLong()))
+            if (!retryable) throw last!!
+            Thread.sleep(minOf(30_000L, 500L * (1L shl attempt)) + (Math.random() * 300).toLong())
         }
         throw IOException("Elexon request failed after $retries attempts: $path: $last")
     }
 
-    private fun parse(body: String): JSONArray {
-        val t = body.trimStart()
-        return if (t.startsWith("[")) JSONArray(t) else JSONObject(t).optJSONArray("data") ?: JSONArray()
-    }
+    /** Small responses only: collect every record. */
+    fun list(path: String, params: List<Pair<String, String>> = emptyList()): List<Map<String, Any?>> =
+        read(path, params, { ArrayList<Map<String, Any?>>() }) { acc, r -> acc.add(r) }
 
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
 
@@ -74,13 +78,3 @@ class Elexon(concurrency: Int = 8, private val retries: Int = 6) {
         private val RETRY = setOf(429, 500, 502, 503, 504)
     }
 }
-
-/** Iterate a JSONArray of objects. */
-inline fun JSONArray.forEachObject(f: (JSONObject) -> Unit) {
-    for (i in 0 until length()) f(getJSONObject(i))
-}
-
-fun JSONObject.str(k: String): String? = if (isNull(k)) null else optString(k)
-fun JSONObject.dbl(k: String): Double? = if (isNull(k)) null else optDouble(k)
-fun JSONObject.int(k: String): Int? = if (isNull(k)) null else optInt(k)
-fun JSONObject.flag(k: String): Int? = if (isNull(k)) null else if (optBoolean(k)) 1 else 0

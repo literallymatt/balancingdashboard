@@ -11,6 +11,4 @@ tasks.withType<KotlinCompile>().configureEach { compilerOptions.jvmTarget.set(Jv
 tasks.withType<JavaCompile>().configureEach { options.release.set(17) }
 
 dependencies {
-    // org.json ships with Android; only needed at compile time here (the harness supplies it on the JVM).
-    compileOnly("org.json:json:20240303")
 }

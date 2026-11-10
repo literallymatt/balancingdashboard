@@ -1,6 +1,5 @@
 package bmdash
 
-import org.json.JSONObject
 import java.net.URLDecoder
 import java.time.LocalDate
 
@@ -12,7 +11,7 @@ class HttpError(val status: Int, message: String) : Exception(message)
  * The dashboard's JSON API over the SQLite store. Mirrors bmdash/api.py: same routes, parameters and
  * response shapes, so the web front end runs unchanged against either backend.
  */
-class Api(private val db: SqlDb, private val control: IngestControl) {
+class Api(private val db: SqlDb, private val control: IngestControl, private val debug: DebugSampler? = null) {
 
     /** Returns null when the path is not an API route. */
     fun handle(method: String, path: String, queryString: String?): Response? {
@@ -39,6 +38,7 @@ class Api(private val db: SqlDb, private val control: IngestControl) {
         r == "prices" -> prices(date(p, "from"), date(p, "to"), p["bucket"] ?: "day")
         r == "bsad" -> bsad(date(p, "from"), date(p, "to"), p["bucket"] ?: "day")
         r == "ingest" -> control.status()
+        r == "debug" -> debug?.let { it.ensureRunning(); it.snapshot() } ?: throw HttpError(404, "Not Found")
         r == "ingest/start" -> startIngest(p)
         r.startsWith("unit/") && r.endsWith("/day") ->
             unitDay(r.removePrefix("unit/").removeSuffix("/day").let { URLDecoder.decode(it, "UTF-8") }, date(p, "date"))
@@ -158,12 +158,45 @@ class Api(private val db: SqlDb, private val control: IngestControl) {
     /** Finest grain: unit x period x direction x pair rows (for tables). */
     private fun periods(f: Filters, limit: Int): Any = mapOf("rows" to clean(db.query(
         """WITH f AS ($BASE) SELECT settlement_date, sp, bm_unit, direction, pair, volume, cashflow,
-           volume_original, volume_tagged, volume_repriced, volume_orig_priced, so_flag, n_acceptances
+           volume_original, volume_tagged, so_flag, n_acceptances
            FROM f WHERE ${f.sql} ORDER BY settlement_date DESC, sp DESC, bm_unit, pair LIMIT $limit""", f.params)))
 
-    private fun acceptances(unit: String, from: String, to: String, limit: Int): Any = mapOf("rows" to clean(db.query(
-        """SELECT * FROM acceptances WHERE bm_unit = ? AND settlement_date BETWEEN ? AND ?
-           ORDER BY time_from DESC, acceptance_number DESC LIMIT $limit""", listOf(unit, from, to))))
+    private fun acceptances(unit: String, from: String, to: String, limit: Int): Any {
+        val rows = try {
+            liveAcceptances(unit, from, to)
+        } catch (e: Exception) {
+            throw HttpError(502, "Elexon: ${e.message}")
+        }
+        return mapOf("rows" to rows.sortedWith(
+            compareByDescending<Map<String, Any?>> { it["time_from"] as String? ?: "" }
+                .thenByDescending { it["acceptance_number"] as Long? ?: 0L }).take(limit))
+    }
+
+    /**
+     * Acceptances (BOALF) for one unit over a range of settlement dates, fetched live. They are not stored:
+     * they were most of the on-phone data and are only ever shown for the single unit being viewed.
+     */
+    private fun liveAcceptances(unit: String, from: String, to: String): List<Map<String, Any?>> {
+        val lo = Ingester.dayBoundsUtc(LocalDate.parse(from)).first.minusSeconds(6 * 3600)
+        val hi = Ingester.dayBoundsUtc(LocalDate.parse(to)).second.plusSeconds(6 * 3600)
+        val seen = HashSet<String>()
+        return Elexon(2).read("/datasets/BOALF/stream",
+            listOf("from" to Ingester.iso(lo), "to" to Ingester.iso(hi), "bmUnit" to unit),
+            { ArrayList<Map<String, Any?>>() }) { acc, r ->
+            val ds = r.str("settlementDate")
+            if (ds != null && ds >= from && ds <= to && r.str("bmUnit") == unit &&
+                seen.add(listOf(r["acceptanceNumber"], r.str("timeFrom"), r.str("timeTo"), r["levelFrom"], r["levelTo"]).joinToString("|"))) {
+                acc.add(linkedMapOf(
+                    "settlement_date" to ds, "sp_from" to r.int("settlementPeriodFrom"), "sp_to" to r.int("settlementPeriodTo"),
+                    "time_from" to r.str("timeFrom"), "time_to" to r.str("timeTo"),
+                    "level_from" to r.dbl("levelFrom"), "level_to" to r.dbl("levelTo"),
+                    "bm_unit" to unit, "ngc_bm_unit" to r.str("nationalGridBmUnit"),
+                    "acceptance_number" to r.long("acceptanceNumber"), "acceptance_time" to r.str("acceptanceTime"),
+                    "deemed_bo" to r["deemedBoFlag"], "so_flag" to r["soFlag"], "stor_flag" to r["storFlag"],
+                    "rr_flag" to r["rrFlag"], "amendment_flag" to r.str("amendmentFlag")))
+            }
+        }
+    }
 
     private fun prices(from: String, to: String, bucket: String): Any {
         val b = BUCKETS[bucket] ?: throw HttpError(400, "bad bucket")
@@ -183,52 +216,51 @@ class Api(private val db: SqlDb, private val control: IngestControl) {
     /** Physical notifications, limits and the bid-offer price ladder for one unit-day, fetched live from
      *  Elexon (cached once the day is old enough to have settled). */
     private fun unitDay(unit: String, d: String): Any {
-        val key = "unitday|$unit|$d"
+        val key = "unitday2|$unit|$d"
         val cached = db.query("SELECT v FROM cache WHERE k = ?", listOf(key)).firstOrNull()?.get("v") as String?
         val live: Map<String, Any?>
         if (cached != null) {
-            val o = JSONObject(cached)
-            live = mapOf("physical" to jsonList(o.getJSONArray("physical")), "bod" to jsonList(o.getJSONArray("bod")))
+            @Suppress("UNCHECKED_CAST")
+            live = Json.parse(cached) as Map<String, Any?>
         } else {
             val day = LocalDate.parse(d)
             val (s, e) = Ingester.dayBoundsUtc(day)
             val rng = listOf("bmUnit" to unit, "from" to Ingester.iso(s), "to" to Ingester.iso(e), "format" to "json")
-            val api = Elexon(4)
-            val phys: List<Map<String, Any?>>
-            val bod: List<Map<String, Any?>>
+            val pool = java.util.concurrent.Executors.newFixedThreadPool(3)
             try {
-                val physRaw = api.get("/balancing/physical", rng + listOf("dataset" to "PN", "dataset" to "MELS", "dataset" to "MILS"))
-                val bodRaw = api.get("/balancing/bid-offer", rng)
-                val p = ArrayList<Map<String, Any?>>(); val b = ArrayList<Map<String, Any?>>()
-                physRaw.forEachObject { r ->
-                    if (r.str("settlementDate") == d) p.add(linkedMapOf(
-                        "dataset" to r.str("dataset"), "timeFrom" to r.str("timeFrom"), "timeTo" to r.str("timeTo"),
-                        "levelFrom" to r.dbl("levelFrom"), "levelTo" to r.dbl("levelTo")))
-                }
-                bodRaw.forEachObject { r ->
-                    if (r.str("settlementDate") == d) b.add(linkedMapOf(
-                        "sp" to r.int("settlementPeriod"), "pair" to r.int("pairId"), "levelFrom" to r.dbl("levelFrom"),
-                        "levelTo" to r.dbl("levelTo"), "bid" to r.dbl("bid"), "offer" to r.dbl("offer")))
-                }
-                phys = p; bod = b
+                val physF = pool.submit(java.util.concurrent.Callable {
+                    Elexon(2).list("/balancing/physical", rng + listOf("dataset" to "PN", "dataset" to "MELS", "dataset" to "MILS"))
+                        .filter { it.str("settlementDate") == d }.map { r -> linkedMapOf(
+                            "dataset" to r.str("dataset"), "timeFrom" to r.str("timeFrom"), "timeTo" to r.str("timeTo"),
+                            "levelFrom" to r.dbl("levelFrom"), "levelTo" to r.dbl("levelTo")) }
+                })
+                val bodF = pool.submit(java.util.concurrent.Callable {
+                    Elexon(2).list("/balancing/bid-offer", rng)
+                        .filter { it.str("settlementDate") == d }.map { r -> linkedMapOf(
+                            "sp" to r.int("settlementPeriod"), "pair" to r.int("pairId"), "levelFrom" to r.dbl("levelFrom"),
+                            "levelTo" to r.dbl("levelTo"), "bid" to r.dbl("bid"), "offer" to r.dbl("offer")) }
+                })
+                val accF = pool.submit(java.util.concurrent.Callable {
+                    liveAcceptances(unit, d, d).sortedWith(compareBy<Map<String, Any?>>({ it["acceptance_time"] as String? ?: "" },
+                        { it["acceptance_number"] as Long? ?: 0L }, { it["time_from"] as String? ?: "" })).map { a ->
+                        a.filterKeys { it in setOf("acceptance_number", "acceptance_time", "time_from", "time_to", "level_from",
+                            "level_to", "so_flag", "stor_flag", "rr_flag", "deemed_bo") } }
+                })
+                live = mapOf("physical" to physF.get(), "bod" to bodF.get(), "acceptances" to accF.get())
             } catch (e: Exception) {
-                throw HttpError(502, "Elexon: ${e.message}")
+                throw HttpError(502, "Elexon: ${e.cause?.message ?: e.message}")
+            } finally {
+                pool.shutdown()
             }
-            live = mapOf("physical" to phys, "bod" to bod)
             if (day.isBefore(Ingester.today().minusDays(Ingester.SETTLE_DAYS))) {
                 db.exec("INSERT OR REPLACE INTO cache VALUES (?, ?)", listOf(key, Json.write(live)))
             }
         }
-        val acc = clean(db.query(
-            """SELECT acceptance_number, acceptance_time, time_from, time_to, level_from, level_to,
-               so_flag, stor_flag, rr_flag, deemed_bo FROM acceptances
-               WHERE bm_unit = ? AND settlement_date = ? ORDER BY acceptance_time, acceptance_number, time_from""",
-            listOf(unit, d)))
         val per = clean(db.query(
             """SELECT sp, direction, pair, volume, cashflow, so_flag FROM boav
                WHERE bm_unit = ? AND settlement_date = ? ORDER BY sp, pair, direction""", listOf(unit, d)))
         return linkedMapOf<String, Any?>("physical" to live["physical"], "bod" to live["bod"],
-            "acceptances" to acc, "periods" to per)
+            "acceptances" to live["acceptances"], "periods" to per)
     }
 
     private fun startIngest(p: Map<String, String>): Any {
@@ -238,12 +270,6 @@ class Api(private val db: SqlDb, private val control: IngestControl) {
         if (!control.start(a, b, p["force"] == "1" || p["force"] == "true")) throw HttpError(409, "an ingest is already running")
         return control.status()
     }
-
-    private fun jsonList(a: org.json.JSONArray): List<Map<String, Any?>> =
-        (0 until a.length()).map { i ->
-            val o = a.getJSONObject(i)
-            o.keys().asSequence().associateWith { k -> if (o.isNull(k)) null else o.get(k) }
-        }
 
     companion object {
         private val DIMS = linkedMapOf(
@@ -277,8 +303,7 @@ class Api(private val db: SqlDb, private val control: IngestControl) {
         private const val BASE = """
             SELECT b.settlement_date AS settlement_date, b.sp AS sp, b.bm_unit AS bm_unit, b.direction AS direction,
                    b.pair AS pair, b.volume AS volume, b.cashflow AS cashflow, b.volume_original AS volume_original,
-                   b.volume_tagged AS volume_tagged, b.volume_repriced AS volume_repriced,
-                   b.volume_orig_priced AS volume_orig_priced, b.so_flag AS so_flag, b.n_acceptances AS n_acceptances,
+                   b.volume_tagged AS volume_tagged, b.so_flag AS so_flag, b.n_acceptances AS n_acceptances,
                    coalesce(u.lead_party, b.lead_party, 'Unknown') AS party,
                    coalesce(b.bm_unit_type, u.bm_unit_type, '?') AS unit_type,
                    coalesce(u.tech, 'Other') AS tech,

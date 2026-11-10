@@ -1,6 +1,7 @@
 package bmdash.harness
 
 import bmdash.Api
+import bmdash.DebugSampler
 import bmdash.Ingester
 import bmdash.SqlDb
 import bmdash.Store
@@ -97,7 +98,22 @@ fun main(args: Array<String>) {
         }
         "serve" -> {
             val staticDir = File(opt(args, "static", "../bmdash/static")!!)
-            val api = Api(db, ThreadIngestControl(ingester))
+            val control = ThreadIngestControl(ingester)
+            val os = java.lang.management.ManagementFactory.getOperatingSystemMXBean() as com.sun.management.OperatingSystemMXBean
+            val tmx = java.lang.management.ManagementFactory.getThreadMXBean()
+            val probe = {
+                val rt = Runtime.getRuntime()
+                mapOf<String, Any?>(
+                    "cores" to rt.availableProcessors(), "cpu_ms" to os.processCpuTime / 1e6,
+                    "threads" to tmx.allThreadIds.toList().mapNotNull { id: Long ->
+                        val ti: java.lang.management.ThreadInfo? = tmx.getThreadInfo(id)
+                        if (ti == null) null else mapOf<String, Any?>("tid" to id, "name" to ti.threadName, "cpu_ms" to tmx.getThreadCpuTime(id) / 1e6)
+                    },
+                    "heap_used_mb" to (rt.totalMemory() - rt.freeMemory()) / 1e6, "heap_max_mb" to rt.maxMemory() / 1e6,
+                    "thermal_name" to "n/a (JVM harness)", "batt_temp_c" to 31.0 + Math.random(), "headroom" to 0.3 + Math.random() / 10,
+                )
+            }
+            val api = Api(db, control, DebugSampler(probe, control))
             val port = opt(args, "port", "8791")!!.toInt()
             val server = HttpServer.create(InetSocketAddress("127.0.0.1", port), 0)
             server.executor = java.util.concurrent.Executors.newFixedThreadPool(8)

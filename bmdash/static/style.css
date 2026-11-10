@@ -106,7 +106,7 @@ tbody tr.click:hover { background: var(--wash); }
   .top { flex-wrap: wrap; gap: 2px 8px; padding: 8px 12px 6px; }
   .brand { font-size: 15px; }
   .top .spacer { display: none; }
-  #coverage { order: 3; flex-basis: 100%; font-size: 11px; }
+  #coverage { order: 3; font-size: 11px; }
   nav { margin-left: auto; }
   nav a { padding: 8px 12px; }
   .filters { position: static; padding: 8px 12px; gap: 8px 10px; }
@@ -130,4 +130,34 @@ tbody tr.click:hover { background: var(--wash); }
   .unit-head h1 { font-size: 18px; flex-basis: 100%; }
   .months { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
   th.hide-sm, td.hide-sm { display: none; }
+}
+
+/* ---- info buttons and popovers ---- */
+.info { display: inline-flex; align-items: center; justify-content: center; width: 17px; height: 17px; margin-left: 5px;
+  padding: 0; border: 1px solid var(--axis); border-radius: 50%; background: transparent; color: var(--muted);
+  font: italic 600 11px/1 Georgia, serif; cursor: pointer; vertical-align: middle; flex: none; }
+.info:hover, .info:focus-visible { color: var(--ink); border-color: var(--ink2); outline: none; }
+th .info { margin-left: 4px; }
+.tipbox { position: fixed; z-index: 100; width: min(320px, calc(100vw - 16px)); padding: 10px 12px; border-radius: 10px;
+  background: var(--surface); color: var(--ink); border: 1px solid var(--axis); box-shadow: 0 6px 24px rgba(0,0,0,.18);
+  font-size: 13px; line-height: 1.45; }
+.tipbox b { display: block; margin-bottom: 3px; }
+.tipbox div { color: var(--ink2); }
+@media (max-width: 700px) { .info { width: 22px; height: 22px; font-size: 13px; } }
+
+/* ---- debug panel ---- */
+button.btn.small { padding: 3px 10px; font-size: 12px; }
+.dbg { position: fixed; z-index: 90; right: 0; bottom: 0; width: min(560px, 100vw); max-height: 88vh; overflow: auto;
+  background: var(--surface); border: 1px solid var(--axis); border-radius: 12px 12px 0 0; padding: 12px;
+  box-shadow: 0 -6px 28px rgba(0,0,0,.22); }
+.dbg-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.dbg-tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 10px 0; }
+.dbg-tile { border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px; min-width: 0; }
+.dbg-tile b { display: block; font-size: 14px; overflow-wrap: anywhere; }
+.dbg-charts { display: grid; gap: 8px; }
+.chart.dbgchart { height: 120px; }
+@media (max-width: 700px) {
+  /* Row 1: title and tabs. Row 2: data status (basis too wide to fit beside the tabs) and the Debug button. */
+  #coverage { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 calc(100% - 84px); min-width: 0; }
+  #dbgBtn { order: 4; margin-left: auto; }
 }

@@ -17,6 +17,5 @@ application { mainClass.set("bmdash.harness.MainKt") }
 
 dependencies {
     implementation(project(":core"))
-    implementation("org.json:json:20240303")
     implementation("org.xerial:sqlite-jdbc:3.46.1.0")
 }
