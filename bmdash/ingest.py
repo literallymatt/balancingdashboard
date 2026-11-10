@@ -62,10 +62,12 @@ def classify_tech(u: dict) -> str:
 
 async def ingest_units(api: Elexon) -> int:
     raw = await api.get("/reference/bmunits/all")
-    rows = []
+    rows, seen = [], set()
     for u in raw:
-        if not u.get("elexonBmUnit"):
+        # Elexon occasionally lists a unit twice (e.g. T_WLNYO-4); keep one row so joins don't double-count.
+        if not u.get("elexonBmUnit") or u["elexonBmUnit"] in seen:
             continue
+        seen.add(u["elexonBmUnit"])
         rows.append({
             "bm_unit": u["elexonBmUnit"], "ngc_bm_unit": u.get("nationalGridBmUnit"),
             "name": u.get("bmUnitName"), "fuel_type": u.get("fuelType"), "tech": classify_tech(u),

@@ -306,9 +306,10 @@ async function breakdownChart(el) {
         `<div class="r"><span>${r.n_units} unit${r.n_units === 1 ? '' : 's'}</span></div></div>`;
     } };
   o.yAxis = { ...o.yAxis, type: 'category', data: rows.map((r) => r.g), splitLine: { show: false },
-    axisLabel: { color: css('--ink2'), fontSize: 12, width: 170, overflow: 'truncate' } };
+    axisLabel: { color: css('--ink2'), fontSize: 12, width: el.clientWidth < 560 ? 105 : 170, overflow: 'truncate' } };
   o.xAxis = { ...o.xAxis, type: 'value', splitLine: { lineStyle: { color: css('--grid') } },
-    axisLabel: { color: css('--muted'), fontSize: 11, formatter: (v) => m.fmt(v).replace(' MWh', '').replace('/MWh', '') } };
+    splitNumber: el.clientWidth < 560 ? 3 : 5,
+    axisLabel: { color: css('--muted'), fontSize: 11, hideOverlap: true, formatter: (v) => m.fmt(v).replace(' MWh', '').replace('/MWh', '') } };
   const bar = { type: 'bar', barMaxWidth: 16, itemStyle: { borderRadius: 2 }, emphasis: { disabled: true } };
   o.series = m.parts?.length > 1
     ? [{ ...bar, name: 'Offers', stack: 'a', color: css('--s1'), data: rows.map((r) => r.offer_vol) },
@@ -433,9 +434,9 @@ function table(el, cols, rows, { onRow, limit = 300, sort } = {}) {
       const c = typeof x === 'number' || typeof y === 'number' ? (x ?? -Infinity) - (y ?? -Infinity) : String(x ?? '').localeCompare(String(y ?? ''));
       return s.desc ? -c : c;
     }) : rows;
-    const head = cols.map((c) => `<th class="${c.num ? 'num' : ''}" data-k="${esc(c.key)}">${esc(c.label)}${s?.key === c.key ? (s.desc ? ' ↓' : ' ↑') : ''}</th>`).join('');
+    const head = cols.map((c) => `<th class="${c.num ? 'num' : ''} ${c.cls || ''}" data-k="${esc(c.key)}">${esc(c.label)}${s?.key === c.key ? (s.desc ? ' ↓' : ' ↑') : ''}</th>`).join('');
     const body = data.slice(0, limit).map((r, i) => `<tr data-i="${i}" class="${onRow ? 'click' : ''}">${cols.map((c) =>
-      `<td class="${c.num ? 'num' : ''}">${c.html ? c.html(r) : esc(c.fmt ? c.fmt(r[c.key], r) : r[c.key] ?? '')}</td>`).join('')}</tr>`).join('');
+      `<td class="${c.num ? 'num' : ''} ${c.cls || ''}">${c.html ? c.html(r) : esc(c.fmt ? c.fmt(r[c.key], r) : r[c.key] ?? '')}</td>`).join('')}</tr>`).join('');
     el.innerHTML = `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>` +
       (data.length > limit ? `<div class="muted small" style="margin-top:6px">Showing ${limit} of ${data.length} rows</div>` : '') +
       (data.length ? '' : '<div class="empty">No rows</div>');
@@ -542,8 +543,8 @@ async function viewUnits(main) {
     const rows = data.rows.map((r) => ({ ...r, net: n0(r.offer_cash) + n0(r.bid_cash),
       offer_price: ratio(r.offer_cash, r.offer_vol), bid_price: ratio(r.bid_cash, r.bid_vol) }));
     const cols = [
-      { key: 'bm_unit', label: 'Unit' }, { key: 'name', label: 'Name' }, { key: 'tech', label: 'Technology', html: techTag },
-      { key: 'party', label: 'Lead party' },
+      { key: 'bm_unit', label: 'Unit' }, { key: 'name', label: 'Name' }, { key: 'tech', label: 'Technology', html: techTag, cls: 'hide-sm' },
+      { key: 'party', label: 'Lead party', cls: 'hide-sm' },
       { key: 'net', label: 'Net cost', num: true, fmt: (v) => gbp(v) },
       { key: 'offer_cash', label: 'Offer payments', num: true, fmt: (v) => gbp(v) },
       { key: 'bid_cash', label: 'Bid cashflow', num: true, fmt: (v) => gbp(v) },
@@ -648,11 +649,12 @@ async function unitDay(el, tableEl) {
 let pollTimer = null;
 async function viewData(main) {
   const today = iso(new Date());
+  const wasEmpty = !META.days.length;
   main.innerHTML = `
   <div class="card"><h2>Fetch data from Elexon</h2>
-    <div class="sub">Downloads bid/offer volumes and cashflows for every settlement period in parallel (about 200 requests per day), plus acceptances, system prices and BSAD. Days already held are skipped unless they were fetched before the data settled.</div>
+    <div class="sub">Downloads bid/offer volumes and cashflows (four whole-day requests per day), plus acceptances, system prices and BSAD. Days already held are skipped unless they were fetched before the data settled.</div>
     <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-top:12px">
-      <label class="small muted">From <input type="date" id="iFrom" value="${addDays(META.min || today, -30)}"></label>
+      <label class="small muted">From <input type="date" id="iFrom" value="${META.min ? addDays(META.min, -30) : addDays(today, -89)}"></label>
       <label class="small muted">To <input type="date" id="iTo" value="${today}"></label>
       <label class="small"><input type="checkbox" id="iForce"> Re-fetch days already held</label>
       <button class="btn primary" id="iGo">Fetch</button>
@@ -692,11 +694,12 @@ async function viewData(main) {
     const j = await (await fetch('/api/ingest')).json();
     drawJob(j);
     if (j.running || j.finished_at) { await loadMeta(); drawCoverage(); }
+    if (wasEmpty && META.days.length && !j.running) { state.view = 'overview'; writeHash(); return; } // first download finished
     if (j.running) pollTimer = setTimeout(poll, 1500);
   };
   $('#iGo').onclick = async () => {
-    const r = await fetch('/api/ingest', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ start: $('#iFrom').value, end: $('#iTo').value, force: $('#iForce').checked }) });
+    const qs = new URLSearchParams({ start: $('#iFrom').value, end: $('#iTo').value, force: $('#iForce').checked ? '1' : '0' });
+    const r = await fetch(`/api/ingest/start?${qs}`);
     if (!r.ok) { $('#job').innerHTML = `<div class="small" style="color:var(--critical)">${esc((await r.json()).detail)}</div>`; return; }
     poll();
   };
@@ -705,6 +708,25 @@ async function viewData(main) {
 }
 
 // ------------------------------------------------------------------ shell
+
+// While a download is running (started here or by the app on launch) show progress and refresh when it ends.
+let watching = false;
+async function watchIngest() {
+  if (watching) return;
+  watching = true;
+  try {
+    for (;;) {
+      const j = await (await fetch('/api/ingest')).json();
+      if (!j.running) break;
+      $('#coverage').textContent = `Updating data… ${j.done}/${j.total} days`;
+      await new Promise((r) => setTimeout(r, 2500));
+    }
+    const before = `${META.max}|${META.days.length}`;
+    await loadMeta();
+    if (before !== `${META.max}|${META.days.length}` && state.view !== 'data') render();
+  } catch (e) { console.error(e); } finally { watching = false; }
+}
+setInterval(watchIngest, 5000);
 
 async function loadMeta() {
   META = await api('meta');
