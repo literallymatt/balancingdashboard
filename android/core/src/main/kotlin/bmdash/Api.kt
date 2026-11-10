@@ -11,7 +11,8 @@ class HttpError(val status: Int, message: String) : Exception(message)
  * The dashboard's JSON API over the SQLite store. Mirrors bmdash/api.py: same routes, parameters and
  * response shapes, so the web front end runs unchanged against either backend.
  */
-class Api(private val db: SqlDb, private val control: IngestControl, private val debug: DebugSampler? = null) {
+class Api(private val db: SqlDb, private val control: IngestControl, private val debug: DebugSampler? = null,
+          private val appVersion: String? = null) {
 
     /** Returns null when the path is not an API route. */
     fun handle(method: String, path: String, queryString: String?): Response? {
@@ -38,6 +39,7 @@ class Api(private val db: SqlDb, private val control: IngestControl, private val
         r == "prices" -> prices(date(p, "from"), date(p, "to"), p["bucket"] ?: "day")
         r == "bsad" -> bsad(date(p, "from"), date(p, "to"), p["bucket"] ?: "day")
         r == "ingest" -> control.status()
+        r == "version" -> appVersion?.let { mapOf("version" to it) } ?: throw HttpError(404, "Not Found")
         r == "debug" -> debug?.let { it.ensureRunning(); it.snapshot() } ?: throw HttpError(404, "Not Found")
         r == "ingest/start" -> startIngest(p)
         r.startsWith("unit/") && r.endsWith("/day") ->

@@ -745,7 +745,9 @@ async function viewData(main) {
     </div>
     <div id="job" style="margin-top:10px"></div>
   </div>
-  <div class="card" style="margin-top:14px"><h2>Coverage</h2><div class="sub" id="covNote"></div><div class="months" id="months"></div></div>`;
+  <div class="card" style="margin-top:14px"><h2>Coverage</h2><div class="sub" id="covNote"></div><div class="months" id="months"></div></div>
+  <div class="small muted" id="buildInfo" style="margin-top:14px"></div>`;
+  fetch('/api/version').then((r) => (r.ok ? r.json() : null)).then((v) => { if (v && $('#buildInfo')) $('#buildInfo').textContent = `App build: ${v.version}`; }).catch(() => {});
   const drawCoverage = () => {
     const held = new Set(META.days);
     $('#covNote').textContent = META.days.length ? `${META.days.length} settlement days held, ${META.min} to ${META.max}.` : 'No data yet.';
