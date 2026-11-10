@@ -463,7 +463,7 @@ const GLOSS = {
   net: ['Net BM cost', 'What NESO paid for balancing through the Balancing Mechanism (BM): offer payments plus bid cashflow. Bid cashflow is usually negative (units pay NESO), so it reduces the total.'],
   offer: ['Offer payments', 'Money NESO pays when it accepts an "offer": a request for a unit to produce more (or consume less), paid at the unit\'s offer price.'],
   bid: ['Bid cashflow', 'An accepted "bid" asks a unit to produce less (or consume more). Generators normally pay NESO to be turned down, so this is usually negative. It can be positive, for example for wind farms that bid negative prices.'],
-  so: ['SO-flagged', 'NESO (the System Operator) flags an action when it was taken to manage a network constraint or system security, such as congestion, voltage or stability, rather than to balance total supply and demand. Here a half-hour counts as SO-flagged if any acceptance covering it carries the flag, so the split is approximate.'],
+  so: ['SO-flagged', 'NESO (the System Operator) accepts bids and offers for two kinds of reason. Energy balancing: the whole system has too much or too little power. System actions: a local need such as a congested line, voltage control or stability. Actions of the second kind carry the "SO flag". This tile shows what they cost and their share of accepted volume. A half-hour counts as flagged if any acceptance covering it carries the flag, so the split is approximate. A dash means there were no flagged actions in the selected range, so the cost was about the energy balance rather than network constraints.'],
   units: ['Units with actions', 'How many BM units had at least one accepted bid or offer in the selected range. A BM unit is a generator, battery, interconnector or demand site registered to trade in the Balancing Mechanism.'],
   activedays: ['Active days', 'Days in the selected range on which this unit had at least one accepted bid or offer.'],
   sysprice: ['System price', 'The imbalance price in £/MWh: what parties whose position is out of balance pay or receive for each half-hour. Shown as the buy price; the range is the lowest and highest half-hour.'],
@@ -548,7 +548,7 @@ async function kpis(el) {
     kpi('Net BM cost', gbp(net), s.n_days ? `${gbp(net / s.n_days)} per day over ${s.n_days} day${s.n_days === 1 ? '' : 's'}` : '', 'net'),
     kpi('Offer payments', gbp(s.offer_cash), `${mwh(s.offer_vol)} @ ${price(ratio(s.offer_cash, s.offer_vol))}`, 'offer'),
     kpi('Bid cashflow', gbp(s.bid_cash), `${mwh(s.bid_vol)} @ ${price(ratio(s.bid_cash, s.bid_vol))}`, 'bid'),
-    kpi('SO-flagged net cost', gbp(s.so_cash), `${gross ? nf(0).format(100 * n0(s.so_vol) / gross) : 0}% of accepted volume (approx.)`, 'so'),
+    kpi('SO-flagged net cost', gbp(s.so_cash), s.so_cash == null ? 'no SO-flagged actions in this range' : `${gross ? nf(0).format(100 * n0(s.so_vol) / gross) : 0}% of accepted volume (approx.)`, 'so'),
     ...(state.view === 'unit' ? [kpi('Active days', nf(0).format(n0(s.n_days)), 'days with accepted actions', 'activedays')] : [
       kpi('Units with actions', nf(0).format(n0(s.n_units)), 'accepted bids or offers', 'units'),
       kpi('Avg system price', price(s.avg_price), `range ${price(s.min_price)} to ${price(s.max_price)}`, 'sysprice'),
