@@ -43,7 +43,8 @@ object Backend {
         }
         val probe = AndroidProbe(app)
         debug = DebugSampler({ probe.read() }, control)
-        api = Api(db, control, debug)
+        val version = runCatching { app.packageManager.getPackageInfo(app.packageName, 0).versionName }.getOrNull()
+        api = Api(db, control, debug, version)
         started = true
     }
 
