@@ -72,6 +72,15 @@ SQLite (see "What is stored" below).
   (an earlier version built whole JSON trees and ran out of memory on the phone). Downloads run
   at background thread priority, and days fetched before they settled are re-fetched at most
   every 6 hours rather than on every launch.
+- **Debug panel**: the *Debug* button in the app header shows what the phone is doing during a
+  download: the app's CPU (and its busiest threads), Android's thermal status and headroom,
+  battery temperature, power draw, data downloaded and memory, as live tiles and charts, with a
+  *Copy log* button. A sampler records these every 2 s while a download runs (or the panel is
+  open), so the history is there even if the panel is opened afterwards. The app's CPU excludes
+  the WebView's chart drawing, which Android runs in a separate process; the battery and thermal
+  readings cover everything. It is not available in the desktop version.
+- **Info buttons**: the small *i* buttons next to KPI tiles, headings, controls and table columns
+  explain terms such as SO-flagged, bid-offer pairs and settlement periods (tap to open).
 - **`harness/`**: runs `core` on the JVM against sqlite-jdbc with a small HTTP server, so the
   phone code path can be exercised and compared with the Python backend without a device:
   `gradle -p android :harness:installDist`, then

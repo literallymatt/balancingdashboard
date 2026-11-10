@@ -434,7 +434,7 @@ function table(el, cols, rows, { onRow, limit = 300, sort } = {}) {
       const c = typeof x === 'number' || typeof y === 'number' ? (x ?? -Infinity) - (y ?? -Infinity) : String(x ?? '').localeCompare(String(y ?? ''));
       return s.desc ? -c : c;
     }) : rows;
-    const head = cols.map((c) => `<th class="${c.num ? 'num' : ''} ${c.cls || ''}" data-k="${esc(c.key)}">${esc(c.label)}${s?.key === c.key ? (s.desc ? ' ↓' : ' ↑') : ''}</th>`).join('');
+    const head = cols.map((c) => `<th class="${c.num ? 'num' : ''} ${c.cls || ''}" data-k="${esc(c.key)}">${esc(c.label)}${s?.key === c.key ? (s.desc ? ' ↓' : ' ↑') : ''}${c.tip ? tip(c.tip) : ''}</th>`).join('');
     const body = data.slice(0, limit).map((r, i) => `<tr data-i="${i}" class="${onRow ? 'click' : ''}">${cols.map((c) =>
       `<td class="${c.num ? 'num' : ''} ${c.cls || ''}">${c.html ? c.html(r) : esc(c.fmt ? c.fmt(r[c.key], r) : r[c.key] ?? '')}</td>`).join('')}</tr>`).join('');
     el.innerHTML = `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>` +
@@ -456,8 +456,88 @@ function openUnit(id) { state.view = 'unit'; state.unit = id; state.split = 'dir
 function select(id, options, value) {
   return `<select id="${id}">${options.map(([v, l]) => `<option value="${esc(v)}" ${v === value ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
 }
-function kpi(label, value, note = '') {
-  return `<div class="card kpi"><div class="label">${esc(label)}</div><div class="value">${esc(value)}</div><div class="note">${esc(note)}</div></div>`;
+
+// ------------------------------------------------------------------ glossary / info popovers
+// Plain-English explanations behind the little "i" buttons. Tap/click one to read it; tap elsewhere to close.
+const GLOSS = {
+  net: ['Net BM cost', 'What NESO paid for balancing through the Balancing Mechanism (BM): offer payments plus bid cashflow. Bid cashflow is usually negative (units pay NESO), so it reduces the total.'],
+  offer: ['Offer payments', 'Money NESO pays when it accepts an "offer": a request for a unit to produce more (or consume less), paid at the unit\'s offer price.'],
+  bid: ['Bid cashflow', 'An accepted "bid" asks a unit to produce less (or consume more). Generators normally pay NESO to be turned down, so this is usually negative. It can be positive, for example for wind farms that bid negative prices.'],
+  so: ['SO-flagged', 'NESO (the System Operator) flags an action when it was taken to manage a network constraint or system security, such as congestion, voltage or stability, rather than to balance total supply and demand. Here a half-hour counts as SO-flagged if any acceptance covering it carries the flag, so the split is approximate.'],
+  units: ['Units with actions', 'How many BM units had at least one accepted bid or offer in the selected range. A BM unit is a generator, battery, interconnector or demand site registered to trade in the Balancing Mechanism.'],
+  activedays: ['Active days', 'Days in the selected range on which this unit had at least one accepted bid or offer.'],
+  sysprice: ['System price', 'The imbalance price in £/MWh: what parties whose position is out of balance pay or receive for each half-hour. Shown as the buy price; the range is the lowest and highest half-hour.'],
+  bsad: ['Non-BM actions (BSAD)', 'Balancing Services Adjustment Data: the cost of balancing actions NESO takes outside the Balancing Mechanism, such as trades and reserve contracts. Shown for context; the unit filters do not apply to it.'],
+  niv: ['Net imbalance volume', 'The size and direction of the whole system\'s imbalance in each half-hour. Red: the system was short, so NESO bought energy. Blue: the system was long, so NESO sold energy or turned generation down.'],
+  measure: ['Measure', 'What the chart plots: money (net cost, offer payments, bid cashflow), energy volume (MWh) or the average accepted price (£/MWh).'],
+  splitby: ['Split by', 'Colours each bar by a category such as technology, lead party or "SO flag" (system-security actions versus energy-balancing ones). The biggest groups are shown and the rest are combined as "Other".'],
+  breakdown: ['Breakdown', 'The top 15 values of the chosen category, ranked by the chosen measure. Tap a bar to filter the whole dashboard to it.'],
+  heatmap: ['Day × settlement period', 'One small cell per half-hour. Red means NESO paid more than it received in that half-hour; blue means net receipts. Tap a day to open it.'],
+  period: ['Settlement period (SP)', 'GB electricity is traded in 48 half-hour periods a day, numbered from 1 (starting at 00:00 local time). Clock-change days have 46 or 50.'],
+  gran: ['Granularity', 'How the time axis is grouped, from single half-hours up to months. "Auto" picks a sensible level for the range.'],
+  bmunits: ['BM units', 'Generators, batteries, interconnectors and demand sites registered to take part in the Balancing Mechanism. Totals are for the selected range and filters; tap a unit for its detail.'],
+  tech: ['Technology', 'Taken from Elexon\'s fuel type where it exists. Batteries are inferred from the unit\'s name, and everything else is "Other", so treat it as a guide rather than an official classification.'],
+  party: ['Lead party', 'The company responsible for the unit in the market.'],
+  offervol: ['Offer volume', 'Energy NESO bought from the unit through accepted offers, in MWh.'],
+  bidvol: ['Bid volume', 'Energy NESO asked the unit to take out (turn down) through accepted bids, in MWh. Shown as a negative number.'],
+  avgoffer: ['Avg offer', 'Average accepted offer price: offer payments ÷ offer volume, in £/MWh.'],
+  avgbid: ['Avg bid', 'Average accepted bid price: bid cashflow ÷ bid volume, in £/MWh. Usually the price a unit pays to be turned down.'],
+  activeperiods: ['Active periods', 'The number of half-hour periods in which the unit had an accepted action.'],
+  soperiods: ['SO-flagged periods', 'Of the active periods, how many were flagged by NESO as system (rather than energy-balancing) actions.'],
+  daydetail: ['Day detail', 'For one day: the unit\'s planned output (Physical Notification), its maximum export and import limits (MEL / MIL), and the output NESO instructed through acceptances. Fetched live from Elexon.'],
+  pairs: ['Bid-offer pairs', 'Each unit submits its prices in tiers called bid-offer pairs. Positive pairs (+1, +2…) are offers and negative pairs (−1, −2…) are bids; ±1 is the tier nearest the unit\'s planned output, and NESO generally works outward from there.'],
+  paidprice: ['Paid price', 'Cashflow ÷ volume for that half-hour and pair, in £/MWh.'],
+  pairbid: ['Pair bid price', 'The unit\'s submitted price for this tier when being turned down, in £/MWh.'],
+  pairoffer: ['Pair offer price', 'The unit\'s submitted price for this tier when being turned up, in £/MWh.'],
+  pairlevel: ['Pair level (MW)', 'The output level in MW that this price tier is attached to in the unit\'s submitted bid-offer data.'],
+  acceptance: ['Acceptances (BOALF)', 'A Bid-Offer Acceptance is NESO\'s instruction to a unit to move to a new output level between two times. This lists every acceptance for the unit in the selected range, newest first, fetched live from Elexon.'],
+  levels: ['Level from / to (MW)', 'The output, in MW, that the unit was told to move from and to over the acceptance window.'],
+  stor: ['STOR', 'Short Term Operating Reserve: the acceptance relates to a reserve service NESO contracts for, rather than a normal energy action.'],
+  rr: ['RR', 'Replacement Reserve: marks an acceptance that was instructed as replacement reserve.'],
+  deemed: ['Deemed', 'A "deemed" bid-offer acceptance is one the settlement rules treat as accepted although it was not issued as a normal instruction.'],
+  dbgcpu: ['App CPU', 'How much processor time this app is using, as a % of one core (100% means one core fully busy). It covers the app\'s own work: downloading, parsing and saving. Drawing the charts happens in a separate Android process and is not counted here.'],
+  dbgthermal: ['Thermal status', 'Android\'s own verdict on how hot the phone is. "none" is normal; "light" or above means the system is starting to limit performance to cool down.'],
+  dbgheadroom: ['Thermal headroom', 'The system\'s forecast of how close the phone is to throttling: 0.0 is cool, 1.0 is the point where throttling begins. Not every phone reports it.'],
+  dbgtemp: ['Battery temperature', 'The battery sensor reading in °C. It lags behind the processor temperature but is the one reading every app is allowed to see. Normal use is roughly 25-35; above about 40 is warm.'],
+  dbgpower: ['Power draw', 'Estimated power the whole phone is drawing from the battery right now (current × voltage). The screen and mobile radio are included, not just this app.'],
+  dbgnet: ['Downloaded', 'Data this app has downloaded since the debug sampler started. Mobile radio activity is a big part of heat, so a large number here matters.'],
+  amendment: ['Amendment', 'Whether the record is the original acceptance (ORI) or a later change to an earlier one, for example an update or deletion.'],
+};
+const tip = (k) => (GLOSS[k] ? `<button type="button" class="info" data-tip="${k}" aria-label="What does ${esc(GLOSS[k][0])} mean?">i</button>` : '');
+
+function showTip(btn) {
+  const box = $('#tipbox');
+  const [title, text] = GLOSS[btn.dataset.tip];
+  box.replaceChildren();
+  const h = document.createElement('b'); h.textContent = title;
+  const p = document.createElement('div'); p.textContent = text;
+  box.append(h, p);
+  box.dataset.for = btn.dataset.tip;
+  box.hidden = false;
+  const r = btn.getBoundingClientRect(), w = box.offsetWidth, ht = box.offsetHeight;
+  const left = Math.min(Math.max(8, r.left + r.width / 2 - w / 2), innerWidth - w - 8);
+  let top = r.bottom + 8;
+  if (top + ht > innerHeight - 8) top = Math.max(8, r.top - ht - 8);
+  box.style.left = `${left}px`; box.style.top = `${top}px`;
+}
+{
+  const box = document.createElement('div');
+  box.id = 'tipbox'; box.className = 'tipbox'; box.hidden = true; box.setAttribute('role', 'tooltip');
+  document.body.append(box);
+  // Capture phase, so tapping an "i" inside a sortable table header explains instead of re-sorting.
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest?.('.info');
+    if (b) {
+      e.preventDefault(); e.stopPropagation();
+      if (!box.hidden && box.dataset.for === b.dataset.tip) box.hidden = true; else showTip(b);
+    } else if (!e.target.closest('#tipbox')) box.hidden = true;
+  }, true);
+  addEventListener('scroll', () => { box.hidden = true; }, true);
+  addEventListener('keydown', (e) => { if (e.key === 'Escape') box.hidden = true; });
+}
+
+function kpi(label, value, note = '', help = '') {
+  return `<div class="card kpi"><div class="label">${esc(label)}${tip(help)}</div><div class="value">${esc(value)}</div><div class="note">${esc(note)}</div></div>`;
 }
 
 async function kpis(el) {
@@ -465,14 +545,14 @@ async function kpis(el) {
   const net = n0(s.offer_cash) + n0(s.bid_cash);
   const gross = Math.abs(n0(s.offer_vol)) + Math.abs(n0(s.bid_vol));
   el.innerHTML = [
-    kpi('Net BM cost', gbp(net), s.n_days ? `${gbp(net / s.n_days)} per day over ${s.n_days} day${s.n_days === 1 ? '' : 's'}` : ''),
-    kpi('Offer payments', gbp(s.offer_cash), `${mwh(s.offer_vol)} @ ${price(ratio(s.offer_cash, s.offer_vol))}`),
-    kpi('Bid cashflow', gbp(s.bid_cash), `${mwh(s.bid_vol)} @ ${price(ratio(s.bid_cash, s.bid_vol))}`),
-    kpi('SO-flagged net cost', gbp(s.so_cash), `${gross ? nf(0).format(100 * n0(s.so_vol) / gross) : 0}% of accepted volume (approx.)`),
-    ...(state.view === 'unit' ? [kpi('Active days', nf(0).format(n0(s.n_days)), 'days with accepted actions')] : [
-      kpi('Units with actions', nf(0).format(n0(s.n_units)), 'accepted bids or offers'),
-      kpi('Avg system price', price(s.avg_price), `range ${price(s.min_price)} to ${price(s.max_price)}`),
-      kpi('Non-BM actions (BSAD)', gbp(s.bsad_cost), `${mwh(s.bsad_vol)} outside the BM`)]),
+    kpi('Net BM cost', gbp(net), s.n_days ? `${gbp(net / s.n_days)} per day over ${s.n_days} day${s.n_days === 1 ? '' : 's'}` : '', 'net'),
+    kpi('Offer payments', gbp(s.offer_cash), `${mwh(s.offer_vol)} @ ${price(ratio(s.offer_cash, s.offer_vol))}`, 'offer'),
+    kpi('Bid cashflow', gbp(s.bid_cash), `${mwh(s.bid_vol)} @ ${price(ratio(s.bid_cash, s.bid_vol))}`, 'bid'),
+    kpi('SO-flagged net cost', gbp(s.so_cash), `${gross ? nf(0).format(100 * n0(s.so_vol) / gross) : 0}% of accepted volume (approx.)`, 'so'),
+    ...(state.view === 'unit' ? [kpi('Active days', nf(0).format(n0(s.n_days)), 'days with accepted actions', 'activedays')] : [
+      kpi('Units with actions', nf(0).format(n0(s.n_units)), 'accepted bids or offers', 'units'),
+      kpi('Avg system price', price(s.avg_price), `range ${price(s.min_price)} to ${price(s.max_price)}`, 'sysprice'),
+      kpi('Non-BM actions (BSAD)', gbp(s.bsad_cost), `${mwh(s.bsad_vol)} outside the BM`, 'bsad')]),
   ].join('');
 }
 
@@ -489,8 +569,8 @@ function explorerHtml() {
     <div class="card-head">
       <div><h2>${esc((METRICS[state.metric] || METRICS.net).label)} over time</h2><div class="sub" id="timeNote"></div></div>
       <div class="controls">
-        <label class="small muted">Measure ${select('metric', METRIC_OPTS, state.metric)}</label>
-        <label class="small muted">Split by ${select('split', splitOpts(), state.split)}</label>
+        <label class="small muted">Measure ${select('metric', METRIC_OPTS, state.metric)}${tip('measure')}</label>
+        <label class="small muted">Split by ${select('split', splitOpts(), state.split)}${tip('splitby')}</label>
         <button class="btn" id="toggleTable">Table</button>
       </div>
     </div>
@@ -499,12 +579,12 @@ function explorerHtml() {
   </div>
   <div class="grid cols2">
     <div class="card">
-      <div class="card-head"><div><h2>Breakdown</h2><div class="sub" id="bdNote"></div></div>
+      <div class="card-head"><div><h2>Breakdown${tip('breakdown')}</h2><div class="sub" id="bdNote"></div></div>
         <div class="controls"><label class="small muted">By ${select('bdim', bd, state.bdim)}</label></div></div>
       <div class="chart tall" id="bdChart"></div>
     </div>
     <div class="card">
-      <div class="card-head"><div><h2>Day × settlement period</h2><div class="sub">Each cell is one half-hour; click a day to open it.</div></div></div>
+      <div class="card-head"><div><h2>Day × settlement period${tip('heatmap')}</h2><div class="sub">Each cell is one half-hour; click a day to open it.</div></div></div>
       <div class="chart tall" id="heatChart"></div>
     </div>
   </div>`;
@@ -524,10 +604,10 @@ function wireExplorer() {
 function viewOverview(main) {
   main.innerHTML = explorerHtml() + `
   <div class="grid cols2">
-    <div class="card"><div class="card-head"><div><h2>System price</h2><div class="sub">Imbalance price (£/MWh) for context.</div></div></div><div class="chart short" id="priceChart"></div></div>
-    <div class="card"><div class="card-head"><div><h2>Net imbalance volume</h2><div class="sub">Red: system short (NESO buying). Blue: system long.</div></div></div><div class="chart short" id="nivChart"></div></div>
+    <div class="card"><div class="card-head"><div><h2>System price${tip('sysprice')}</h2><div class="sub">Imbalance price (£/MWh) for context.</div></div></div><div class="chart short" id="priceChart"></div></div>
+    <div class="card"><div class="card-head"><div><h2>Net imbalance volume${tip('niv')}</h2><div class="sub">Red: system short (NESO buying). Blue: system long.</div></div></div><div class="chart short" id="nivChart"></div></div>
   </div>
-  <div class="card" style="margin-top:14px"><div class="card-head"><div><h2>Balancing actions outside the BM</h2><div class="sub">Balancing Services Adjustment Data cost (trades, non-BM reserve). Not affected by the unit filters.</div></div></div><div class="chart short" id="bsadChart"></div></div>`;
+  <div class="card" style="margin-top:14px"><div class="card-head"><div><h2>Balancing actions outside the BM${tip('bsad')}</h2><div class="sub">Balancing Services Adjustment Data cost (trades, non-BM reserve). Not affected by the unit filters.</div></div></div><div class="chart short" id="bsadChart"></div></div>`;
   wireExplorer();
   loading($('#priceChart'), () => priceChart($('#priceChart')));
   loading($('#nivChart'), () => nivChart($('#nivChart')));
@@ -535,7 +615,7 @@ function viewOverview(main) {
 }
 
 async function viewUnits(main) {
-  main.innerHTML = `<div class="card"><div class="card-head"><div><h2>BM units</h2><div class="sub" id="unitsNote">Totals for the selected range and filters. Click a unit to drill in.</div></div>
+  main.innerHTML = `<div class="card"><div class="card-head"><div><h2>BM units${tip('bmunits')}</h2><div class="sub" id="unitsNote">Totals for the selected range and filters. Click a unit to drill in.</div></div>
     <div class="controls"><input id="search" type="search" placeholder="Search unit, name, party…" size="30"></div></div><div id="unitsTable"></div></div>`;
   const el = $('#unitsTable');
   await loading(el, async () => {
@@ -543,14 +623,14 @@ async function viewUnits(main) {
     const rows = data.rows.map((r) => ({ ...r, net: n0(r.offer_cash) + n0(r.bid_cash),
       offer_price: ratio(r.offer_cash, r.offer_vol), bid_price: ratio(r.bid_cash, r.bid_vol) }));
     const cols = [
-      { key: 'bm_unit', label: 'Unit' }, { key: 'name', label: 'Name' }, { key: 'tech', label: 'Technology', html: techTag, cls: 'hide-sm' },
-      { key: 'party', label: 'Lead party', cls: 'hide-sm' },
-      { key: 'net', label: 'Net cost', num: true, fmt: (v) => gbp(v) },
-      { key: 'offer_cash', label: 'Offer payments', num: true, fmt: (v) => gbp(v) },
-      { key: 'bid_cash', label: 'Bid cashflow', num: true, fmt: (v) => gbp(v) },
-      { key: 'offer_vol', label: 'Offer volume', num: true, fmt: mwh }, { key: 'bid_vol', label: 'Bid volume', num: true, fmt: mwh },
-      { key: 'offer_price', label: 'Avg offer', num: true, fmt: price }, { key: 'bid_price', label: 'Avg bid', num: true, fmt: price },
-      { key: 'n_periods', label: 'Active periods', num: true }, { key: 'n_so_periods', label: 'SO-flagged periods', num: true },
+      { key: 'bm_unit', label: 'Unit' }, { key: 'name', label: 'Name' }, { key: 'tech', label: 'Technology', html: techTag, cls: 'hide-sm', tip: 'tech' },
+      { key: 'party', label: 'Lead party', cls: 'hide-sm', tip: 'party' },
+      { key: 'net', label: 'Net cost', num: true, fmt: (v) => gbp(v), tip: 'net' },
+      { key: 'offer_cash', label: 'Offer payments', num: true, fmt: (v) => gbp(v), tip: 'offer' },
+      { key: 'bid_cash', label: 'Bid cashflow', num: true, fmt: (v) => gbp(v), tip: 'bid' },
+      { key: 'offer_vol', label: 'Offer volume', num: true, fmt: mwh, tip: 'offervol' }, { key: 'bid_vol', label: 'Bid volume', num: true, fmt: mwh, tip: 'bidvol' },
+      { key: 'offer_price', label: 'Avg offer', num: true, fmt: price, tip: 'avgoffer' }, { key: 'bid_price', label: 'Avg bid', num: true, fmt: price, tip: 'avgbid' },
+      { key: 'n_periods', label: 'Active periods', num: true, tip: 'activeperiods' }, { key: 'n_so_periods', label: 'SO-flagged periods', num: true, tip: 'soperiods' },
     ];
     const draw = () => {
       const s = $('#search').value.toLowerCase();
@@ -574,14 +654,14 @@ async function viewUnit(main) {
     ${kv('Data held', info.first ? `${info.first} to ${info.last}` : 'none')}</div>
   ${explorerHtml()}
   <div class="card" style="margin-top:14px">
-    <div class="card-head"><div><h2>Day detail</h2><div class="sub">Physical notification, export/import limits and accepted levels (MW, local time), fetched live from Elexon.</div></div>
+    <div class="card-head"><div><h2>Day detail${tip('daydetail')}</h2><div class="sub">Physical notification, export/import limits and accepted levels (MW, local time), fetched live from Elexon.</div></div>
       <div class="controls"><label class="small muted">Settlement day <input type="date" id="day" min="${esc(state.from)}" max="${esc(state.to)}"></label></div></div>
     <div class="chart" id="dayChart"></div>
-    <h2 style="margin-top:14px">Accepted volume by period and pair</h2>
+    <h2 style="margin-top:14px">Accepted volume by period and pair${tip('pairs')}</h2>
     <div class="sub">Settled volume and cashflow per bid-offer pair, with the submitted pair prices.</div>
     <div id="dayTable" style="margin-top:8px"></div>
   </div>
-  <div class="card" style="margin-top:14px"><div class="card-head"><div><h2>Acceptances (BOALF)</h2><div class="sub">Every acceptance issued to this unit in the selected range, newest first.</div></div></div><div id="accTable"></div></div>`;
+  <div class="card" style="margin-top:14px"><div class="card-head"><div><h2>Acceptances (BOALF)${tip('acceptance')}</h2><div class="sub">Every acceptance issued to this unit in the selected range, newest first.</div></div></div><div id="accTable"></div></div>`;
   wireExplorer();
 
   // Default the day detail to the most recent day with activity in range.
@@ -603,9 +683,9 @@ async function viewUnit(main) {
     table($('#accTable'), [
       { key: 'acceptance_number', label: 'Acceptance', num: true }, { key: 'acceptance_time', label: 'Accepted at', fmt: ts },
       { key: 'time_from', label: 'From', fmt: ts }, { key: 'time_to', label: 'To', fmt: ts },
-      { key: 'level_from', label: 'Level from (MW)', num: true }, { key: 'level_to', label: 'Level to (MW)', num: true },
-      { key: 'sp_from', label: 'SP', num: true }, { key: 'so_flag', label: 'SO flag', fmt: yn }, { key: 'stor_flag', label: 'STOR', fmt: yn },
-      { key: 'rr_flag', label: 'RR', fmt: yn }, { key: 'deemed_bo', label: 'Deemed', fmt: yn }, { key: 'amendment_flag', label: 'Amendment' },
+      { key: 'level_from', label: 'Level from (MW)', num: true, tip: 'levels' }, { key: 'level_to', label: 'Level to (MW)', num: true },
+      { key: 'sp_from', label: 'SP', num: true, tip: 'period' }, { key: 'so_flag', label: 'SO flag', fmt: yn, tip: 'so' }, { key: 'stor_flag', label: 'STOR', fmt: yn, tip: 'stor' },
+      { key: 'rr_flag', label: 'RR', fmt: yn, tip: 'rr' }, { key: 'deemed_bo', label: 'Deemed', fmt: yn, tip: 'deemed' }, { key: 'amendment_flag', label: 'Amendment', tip: 'amendment' },
     ], a.rows, { limit: 300 });
   });
 }
@@ -640,11 +720,11 @@ async function unitDay(el, tableEl) {
   const bod = new Map(d.bod.map((b) => [`${b.sp}|${b.pair}`, b]));
   const rows = d.periods.map((p) => { const b = bod.get(`${p.sp}|${p.pair}`) || {}; return { ...p, time: spTime(p.sp), px: ratio(p.cashflow, p.volume), bid: b.bid, offer: b.offer, level: b.levelFrom }; });
   table(tableEl, [
-    { key: 'sp', label: 'SP', num: true }, { key: 'time', label: 'Start' }, { key: 'direction', label: 'Direction' }, { key: 'pair', label: 'Pair', num: true },
+    { key: 'sp', label: 'SP', num: true, tip: 'period' }, { key: 'time', label: 'Start' }, { key: 'direction', label: 'Direction' }, { key: 'pair', label: 'Pair', num: true, tip: 'pairs' },
     { key: 'volume', label: 'Volume', num: true, fmt: mwh }, { key: 'cashflow', label: 'Cashflow', num: true, fmt: (v) => gbp(v, false) },
-    { key: 'px', label: 'Paid price', num: true, fmt: price }, { key: 'bid', label: 'Pair bid price', num: true, fmt: price },
-    { key: 'offer', label: 'Pair offer price', num: true, fmt: price }, { key: 'level', label: 'Pair level (MW)', num: true },
-    { key: 'so_flag', label: 'SO flag', fmt: (v) => (v ? 'Yes' : '') },
+    { key: 'px', label: 'Paid price', num: true, fmt: price, tip: 'paidprice' }, { key: 'bid', label: 'Pair bid price', num: true, fmt: price, tip: 'pairbid' },
+    { key: 'offer', label: 'Pair offer price', num: true, fmt: price, tip: 'pairoffer' }, { key: 'level', label: 'Pair level (MW)', num: true, tip: 'pairlevel' },
+    { key: 'so_flag', label: 'SO flag', fmt: (v) => (v ? 'Yes' : ''), tip: 'so' },
   ], rows, { limit: 600 });
 }
 
@@ -709,6 +789,99 @@ async function viewData(main) {
   };
   drawCoverage();
   poll();
+}
+
+
+// ------------------------------------------------------------------ debug panel: CPU, heat and data while downloading
+{
+  const panel = document.createElement('div');
+  panel.id = 'dbg'; panel.className = 'dbg'; panel.hidden = true;
+  panel.innerHTML = `
+    <div class="dbg-head"><b>Debug: CPU, heat and data</b><span class="spacer"></span>
+      <button type="button" class="btn" id="dbgCopy">Copy log</button><button type="button" class="btn" id="dbgClose">Close</button></div>
+    <div class="small muted" id="dbgNote">Loading…</div>
+    <div class="dbg-tiles" id="dbgNow"></div>
+    <div class="dbg-charts">
+      <div><div class="small muted">App CPU (% of one core)</div><div class="chart dbgchart" id="dbgCpu"></div></div>
+      <div><div class="small muted">Battery temperature (°C) and heat headroom (0 cool, 1 throttling)</div><div class="chart dbgchart" id="dbgTemp"></div></div>
+      <div><div class="small muted">Phone power draw (W)</div><div class="chart dbgchart" id="dbgPower"></div></div>
+      <div><div class="small muted">Downloaded (MB) and days finished</div><div class="chart dbgchart" id="dbgNet"></div></div>
+    </div>
+    <div class="small" id="dbgThreads"></div>`;
+  document.body.append(panel);
+  let timer = null, last = null;
+  const f1 = (v, u = '') => (v == null || Number.isNaN(v) ? '–' : `${nf(1).format(v)}${u}`);
+  const tile = (label, value, help = '') => `<div class="dbg-tile"><div class="small muted">${esc(label)}${tip(help)}</div><b>${esc(value)}</b></div>`;
+  const hhmmss = (t) => new Date(t).toLocaleTimeString('en-GB');
+
+  function line(el, h, series, extra = {}) {
+    const o = baseOption();
+    const recent = h.slice(-450);
+    o.legend.show = false;
+    o.grid = { left: 4, right: 10, top: 10, bottom: 4, containLabel: true };
+    o.xAxis = { ...o.xAxis, type: 'category', data: recent.map((r) => hhmmss(r.t)), axisLabel: { color: css('--muted'), fontSize: 10, hideOverlap: true } };
+    o.yAxis = extra.yAxis || { ...o.yAxis, type: 'value', scale: true };
+    o.series = series.map(([name, key, color, area, yAxisIndex]) => ({ name, type: 'line', showSymbol: false, yAxisIndex: yAxisIndex || 0,
+      lineStyle: { width: 1.6, color }, itemStyle: { color }, areaStyle: area ? { color, opacity: .12 } : undefined,
+      data: recent.map((r) => (typeof key === 'function' ? key(r) : r[key]) ?? null) }));
+    o.tooltip = { ...o.tooltip, valueFormatter: (v) => (v == null ? '–' : nf(2).format(v)) };
+    chart(el).setOption(o, true);
+  }
+
+  function render(d) {
+    last = d;
+    const l = d.latest || {}, h = d.history || [];
+    const cores = l.cores || 1;
+    const note = [];
+    if (l.charging) note.push('plugged in, so battery readings are skewed');
+    if (l.cpu_mhz) note.push(`CPU MHz: ${l.cpu_mhz.map((m) => Math.round(m)).join(' / ')}`);
+    if (l.zones) note.push(`Sensors: ${l.zones.map((z) => `${z.type} ${nf(1).format(z.c)}°C`).join(', ')}`);
+    $('#dbgNote').textContent = note.join(' · ') || 'Updates every couple of seconds while this panel is open. Tap Copy log to share the readings.';
+    $('#dbgNow').innerHTML = [
+      tile('App CPU', l.cpu_pct == null ? '–' : `${nf(0).format(l.cpu_pct)}% (${f1(l.cpu_pct / cores, '%')} of ${cores} cores)`, 'dbgcpu'),
+      tile('Thermal status', l.thermal_name || '–', 'dbgthermal'),
+      tile('Thermal headroom', l.headroom == null ? 'n/a' : nf(2).format(l.headroom), 'dbgheadroom'),
+      tile('Battery temp', l.batt_temp_c == null ? '–' : `${nf(1).format(l.batt_temp_c)} °C`, 'dbgtemp'),
+      tile('Power draw', l.watts == null ? '–' : `${nf(2).format(l.watts)} W (${Math.round(Math.abs(l.batt_ma || 0))} mA)`, 'dbgpower'),
+      tile('Downloaded', l.rx_mb == null ? '–' : `${nf(1).format(l.rx_mb)} MB`, 'dbgnet'),
+      tile('Memory', `${Math.round(l.heap_used_mb || 0)} / ${Math.round(l.heap_max_mb || 0)} MB`),
+      tile('Download', l.ingest_running ? `running ${l.ingest_done}/${l.ingest_total} days` : 'idle'),
+    ].join('');
+    line($('#dbgCpu'), h, [['CPU %', 'cpu_pct', css('--s1'), true]]);
+    line($('#dbgTemp'), h, [['Battery °C', 'batt_temp_c', css('--s2'), false, 0], ['Headroom', 'headroom', css('--s7'), false, 1]], {
+      yAxis: [{ ...baseOption().yAxis, type: 'value', scale: true }, { ...baseOption().yAxis, type: 'value', min: 0, max: 1.2, splitLine: { show: false } }] });
+    line($('#dbgPower'), h, [['Watts', 'watts', css('--s4'), true]]);
+    line($('#dbgNet'), h, [['MB', 'rx_mb', css('--s3'), true, 0], ['Days', 'ingest_done', css('--s5'), false, 1]], {
+      yAxis: [{ ...baseOption().yAxis, type: 'value', scale: true }, { ...baseOption().yAxis, type: 'value', splitLine: { show: false } }] });
+    const th = d.threads || [];
+    $('#dbgThreads').innerHTML = th.length ? `<b>Busiest threads now:</b> ${th.map((t) => `${esc(t.name)} ${nf(0).format(t.cpu_pct)}%`).join(' · ')}` : '<span class="muted">No thread is using noticeable CPU right now.</span>';
+  }
+
+  async function poll() {
+    clearTimeout(timer);
+    if (panel.hidden) return;
+    try {
+      const r = await fetch('/api/debug');
+      if (r.status === 404) { $('#dbgNote').textContent = 'Not available in this version: the debug panel only works in the Android app.'; return; }
+      render(await r.json());
+    } catch (e) { $('#dbgNote').textContent = `Couldn't read debug data: ${e.message}`; }
+    timer = setTimeout(poll, 1500);
+  }
+  $('#dbgBtn').onclick = () => { panel.hidden = !panel.hidden; if (!panel.hidden) poll(); };
+  $('#dbgClose').onclick = () => { panel.hidden = true; clearTimeout(timer); };
+  $('#dbgCopy').onclick = async () => {
+    if (!last) return;
+    const l = last.latest || {};
+    const head = `GB Balancing debug log. cores=${l.cores} thermal=${l.thermal_name} charging=${l.charging} interval=${last.interval_ms}ms`;
+    const cols = ['time', 'cpu_pct', 'batt_temp_c', 'headroom', 'thermal_status', 'watts', 'batt_ma', 'rx_mb', 'heap_used_mb', 'ingest_running', 'ingest_done', 'ingest_total'];
+    const rows = (last.history || []).map((r) => [hhmmss(r.t), ...cols.slice(1).map((c) => (r[c] == null ? '' : typeof r[c] === 'number' ? +r[c].toFixed(2) : r[c]))].join(','));
+    const threads = (last.threads || []).map((t) => `${t.name} ${nf(0).format(t.cpu_pct)}%`).join('; ');
+    const text = [head, `busiest threads now: ${threads || 'none'}`, cols.join(','), ...rows].join('\n');
+    try { await navigator.clipboard.writeText(text); } catch (e) {
+      const ta = document.createElement('textarea'); ta.value = text; document.body.append(ta); ta.select(); document.execCommand('copy'); ta.remove();
+    }
+    $('#dbgNote').textContent = `Copied ${rows.length} readings. Paste them into the chat.`;
+  };
 }
 
 // ------------------------------------------------------------------ shell

@@ -13,6 +13,7 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.FrameLayout
 import bmdash.Ingester
 import bmdash.Store
 import java.io.ByteArrayInputStream
@@ -39,13 +40,18 @@ class MainActivity : Activity() {
             settings.allowContentAccess = false
             webViewClient = Client()
         }
-        setContentView(web)
-        // Targeting SDK 35 draws edge-to-edge; keep the page clear of the system bars.
-        web.setOnApplyWindowInsetsListener { v, insets ->
-            val b = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.ime())
+        // Targeting SDK 35 draws edge-to-edge, so the page would sit under the status bar and navigation bar.
+        // The system-bar insets are applied as padding on a container: a WebView ignores its own padding for
+        // page content, which is what hid the tabs behind the clock and Wi-Fi icons.
+        val root = FrameLayout(this).apply { setBackgroundColor(getColor(R.color.page_bg)) }
+        root.addView(web, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        setContentView(root)
+        root.setOnApplyWindowInsetsListener { v, insets ->
+            val b = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout() or WindowInsets.Type.ime())
             v.setPadding(b.left, b.top, b.right, b.bottom)
             WindowInsets.CONSUMED
         }
+        root.requestApplyInsets()
 
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)

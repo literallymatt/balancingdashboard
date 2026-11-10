@@ -3,6 +3,7 @@ package app.bmdash
 import android.content.Context
 import android.content.Intent
 import bmdash.Api
+import bmdash.DebugSampler
 import bmdash.IngestControl
 import bmdash.Ingester
 import bmdash.Store
@@ -20,6 +21,7 @@ object Backend {
     lateinit var db: AndroidSqlDb
     lateinit var ingester: Ingester
     lateinit var api: Api
+    lateinit var debug: DebugSampler
 
     @Synchronized
     fun init(ctx: Context) {
@@ -29,14 +31,19 @@ object Backend {
         Store.init(db)
         // Background priority keeps the downloads on the efficient cores and out of the UI's way, so the phone
         // stays cool and responsive; a few connections are plenty because Elexon's response time is the limit.
+        val threadNo = java.util.concurrent.atomic.AtomicInteger()
         val background = ThreadFactory { r ->
-            Thread { Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND); r.run() }.apply { isDaemon = true }
+            Thread { Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND); r.run() }
+                .apply { isDaemon = true; name = "bmdash-dl-${threadNo.incrementAndGet()}" }
         }
         ingester = Ingester(db, concurrency = 6, parallelChunks = 2, threadFactory = background)
-        api = Api(db, object : IngestControl {
+        val control = object : IngestControl {
             override fun status() = ingester.job.asMap()
             override fun start(a: LocalDate, b: LocalDate, force: Boolean): Boolean = startIngest(app, a, b, force)
-        })
+        }
+        val probe = AndroidProbe(app)
+        debug = DebugSampler({ probe.read() }, control)
+        api = Api(db, control, debug)
         started = true
     }
 

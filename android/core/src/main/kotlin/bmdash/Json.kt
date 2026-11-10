@@ -67,6 +67,15 @@ class JsonReader(private val r: Reader) {
     private var pos = 0
     private var lim = 0
 
+    // Elexon records repeat the same keys and many of the same values (unit ids, dates, party names) thousands
+    // of times, so short strings are looked up in small caches instead of being allocated each time.
+    private class Interned(val s: String, val chars: CharArray)
+    private val keyCache = arrayOfNulls<Interned>(512)
+    private val valueCache = arrayOfNulls<Interned>(2048)
+    private var depth = 0
+    /** Streaming mode only: drop zero-valued entries of nested objects (Elexon's pair maps are mostly zeros). */
+    private var dropNestedZeros = false
+
     private fun peek(): Int {
         if (pos >= lim) {
             lim = r.read(buf, 0, buf.size)
@@ -93,6 +102,7 @@ class JsonReader(private val r: Reader) {
 
     /** Stream the records of a top-level array, or of the `data` array inside a top-level object. */
     fun streamRecords(onRecord: (Map<String, Any?>) -> Unit) {
+        dropNestedZeros = true
         skipWs()
         when (peek()) {
             '['.code -> streamArray(onRecord)
@@ -138,7 +148,7 @@ class JsonReader(private val r: Reader) {
         return when (val c = peek()) {
             '{'.code -> readObject()
             '['.code -> readArray()
-            '"'.code -> readString()
+            '"'.code -> readString(valueCache)
             't'.code -> literal("true", true)
             'f'.code -> literal("false", false)
             'n'.code -> literal("null", null)
@@ -155,17 +165,19 @@ class JsonReader(private val r: Reader) {
     private fun readObject(): Map<String, Any?> {
         expect('{')
         val m = LinkedHashMap<String, Any?>(16)
+        depth++
         skipWs()
-        if (peek() == '}'.code) { pos++; return m }
+        if (peek() == '}'.code) { pos++; depth--; return m }
         while (true) {
             skipWs()
-            val k = readString()
+            val k = readString(keyCache)
             expect(':')
-            m[k] = readValue()
+            val v = readValue()
+            if (!(dropNestedZeros && depth >= 2 && v === ZERO)) m[k] = v
             skipWs()
             val c = next()
             if (c == ','.code) continue
-            if (c == '}'.code) return m
+            if (c == '}'.code) { depth--; return m }
             throw IOException("Bad JSON in object")
         }
     }
@@ -185,9 +197,39 @@ class JsonReader(private val r: Reader) {
         }
     }
 
-    private fun readString(): String {
+    private fun readString(cache: Array<Interned?>? = null): String {
         skipWs()
         if (next() != '"'.code) throw IOException("Bad JSON: expected string")
+        // Fast path: the closing quote is in the buffer and there are no escapes.
+        var i = pos
+        var h = 0
+        while (i < lim) {
+            val c = buf[i]
+            if (c == '"') {
+                val len = i - pos
+                val s: String
+                if (cache != null && len <= 48) {
+                    val idx = (h xor (h ushr 9)) and (cache.size - 1)
+                    val cand = cache[idx]
+                    s = if (cand != null && cand.chars.size == len && sameChars(cand.chars, pos)) cand.s
+                        else String(buf, pos, len).also { cache[idx] = Interned(it, buf.copyOfRange(pos, pos + len)) }
+                } else s = String(buf, pos, len)
+                pos = i + 1
+                return s
+            }
+            if (c == '\\') break
+            h = 31 * h + c.code
+            i++
+        }
+        return readStringSlow()
+    }
+
+    private fun sameChars(chars: CharArray, from: Int): Boolean {
+        for (j in chars.indices) if (chars[j] != buf[from + j]) return false
+        return true
+    }
+
+    private fun readStringSlow(): String {
         val sb = StringBuilder()
         while (true) {
             val c = next()
@@ -215,6 +257,33 @@ class JsonReader(private val r: Reader) {
     }
 
     private fun readNumber(): Any {
+        // Fast paths when the whole token is in the buffer: plain integers, and decimals (zeros are shared).
+        var i = pos
+        val l = lim
+        val neg = i < l && buf[i] == '-'
+        if (neg) i++
+        val digitsStart = i
+        var v = 0L
+        while (i < l && buf[i] >= '0' && buf[i] <= '9') { v = v * 10 + (buf[i] - '0'); i++ }
+        val digits = i - digitsStart
+        if (i < l && digits in 1..18) {
+            val c = buf[i]
+            if (c != '.' && c != 'e' && c != 'E') { pos = i; return if (neg) -v else v }
+            if (c == '.') {
+                var j = i + 1
+                var allZero = v == 0L
+                while (j < l && buf[j] >= '0' && buf[j] <= '9') { if (buf[j] != '0') allZero = false; j++ }
+                if (j < l && j > i + 1 && buf[j] != 'e' && buf[j] != 'E') {
+                    val start = pos
+                    pos = j
+                    return if (allZero) ZERO else String(buf, start, j - start).toDouble()
+                }
+            }
+        }
+        return readNumberSlow()
+    }
+
+    private fun readNumberSlow(): Any {
         val sb = StringBuilder()
         var isInt = true
         while (true) {
@@ -226,6 +295,11 @@ class JsonReader(private val r: Reader) {
         }
         val s = sb.toString()
         return if (isInt) (s.toLongOrNull() ?: s.toDouble()) else s.toDouble()
+    }
+
+    private companion object {
+        /** One shared boxed 0.0, so zero-valued decimals allocate nothing (and can be recognised by identity). */
+        val ZERO: Any = 0.0
     }
 }
 

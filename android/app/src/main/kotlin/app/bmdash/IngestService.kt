@@ -23,6 +23,7 @@ class IngestService : Service() {
         val a = LocalDate.parse(intent?.getStringExtra("start") ?: LocalDate.now().minusDays(Backend.DEFAULT_DAYS - 1L).toString())
         val b = LocalDate.parse(intent?.getStringExtra("end") ?: LocalDate.now().toString())
         val force = intent?.getBooleanExtra("force", false) ?: false
+        Backend.debug.ensureRunning()
         thread(name = "bmdash-ingest") {
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
             try {
