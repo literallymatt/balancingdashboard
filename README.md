@@ -104,6 +104,13 @@ SQLite (see "What is stored" below).
   readings cover everything. It is not available in the desktop version.
 - **Info buttons**: the small *i* buttons next to KPI tiles, headings, controls and table columns
   explain terms such as SO-flagged, bid-offer pairs and settlement periods (tap to open).
+- **Instruction replay**: on a unit's page, the Day detail card can replay NESO's instructions
+  for the day in the order they were issued (play, pause, step, slider), showing the unit's plan
+  (PN), its output as instructed so far, the previous state and the newest instruction, with a
+  marker for when each was issued. Model: the unit follows the newest-issued acceptance covering
+  each moment, or its own plan when none does. Checked against Elexon's settled volumes on
+  9 unit-days (hundreds of acceptances each): matches to within 0.1 MWh, whereas "a new
+  instruction cancels everything earlier" is off by 3.4% and "add them all up" by 28%.
 - **`harness/`**: runs `core` on the JVM against sqlite-jdbc with a small HTTP server, so the
   phone code path can be exercised and compared with the Python backend without a device:
   `gradle -p android :harness:installDist`, then
