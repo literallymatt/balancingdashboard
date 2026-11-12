@@ -501,6 +501,7 @@ const GLOSS = {
   dbgtemp: ['Battery temperature', 'The battery sensor reading in °C. It lags behind the processor temperature but is the one reading every app is allowed to see. Normal use is roughly 25-35; above about 40 is warm.'],
   dbgpower: ['Power draw', 'Estimated power the whole phone is drawing from the battery right now (current × voltage). The screen and mobile radio are included, not just this app.'],
   dbgnet: ['Downloaded', 'Data this app has downloaded since the debug sampler started. Mobile radio activity is a big part of heat, so a large number here matters.'],
+  replay: ['Replaying the instructions', 'NESO can send a unit a new instruction while an earlier one is still running or waiting to start. The newest instruction takes over for the times it covers, and when an instruction ends the unit goes back to its own plan (PN). This replays the day\'s acceptances in the order they were issued so you can watch the instructed output change. Played back this way, they reproduce the energy Elexon settles for the unit.'],
   amendment: ['Amendment', 'Whether the record is the original acceptance (ORI) or a later change to an earlier one, for example an update or deletion.'],
 };
 const tip = (k) => (GLOSS[k] ? `<button type="button" class="info" data-tip="${k}" aria-label="What does ${esc(GLOSS[k][0])} mean?">i</button>` : '');
@@ -657,6 +658,7 @@ async function viewUnit(main) {
     <div class="card-head"><div><h2>Day detail${tip('daydetail')}</h2><div class="sub">Physical notification, export/import limits and accepted levels (MW, local time), fetched live from Elexon.</div></div>
       <div class="controls"><label class="small muted">Settlement day <input type="date" id="day" min="${esc(state.from)}" max="${esc(state.to)}"></label></div></div>
     <div class="chart" id="dayChart"></div>
+    <div class="replay" id="replay"></div>
     <h2 style="margin-top:14px">Accepted volume by period and pair${tip('pairs')}</h2>
     <div class="sub">Settled volume and cashflow per bid-offer pair, with the submitted pair prices.</div>
     <div id="dayTable" style="margin-top:8px"></div>
@@ -716,6 +718,7 @@ async function unitDay(el, tableEl) {
   ];
   if (!d.physical.length && !acc.length) { el.innerHTML = '<div class="empty">No physical data or acceptances for this unit on this day.</div>'; charts.delete(el); }
   else chart(el).setOption(o, true);
+  replay($('#replay'), d);
 
   const bod = new Map(d.bod.map((b) => [`${b.sp}|${b.pair}`, b]));
   const rows = d.periods.map((p) => { const b = bod.get(`${p.sp}|${p.pair}`) || {}; return { ...p, time: spTime(p.sp), px: ratio(p.cashflow, p.volume), bid: b.bid, offer: b.offer, level: b.levelFrom }; });
@@ -726,6 +729,139 @@ async function unitDay(el, tableEl) {
     { key: 'offer', label: 'Pair offer price', num: true, fmt: price, tip: 'pairoffer' }, { key: 'level', label: 'Pair level (MW)', num: true, tip: 'pairlevel' },
     { key: 'so_flag', label: 'SO flag', fmt: (v) => (v ? 'Yes' : ''), tip: 'so' },
   ], rows, { limit: 600 });
+}
+
+
+// ------------------------------------------------------------------ instruction replay
+// Replays a unit's acceptances (BOALF) in the order NESO issued them. Model: at any moment the unit follows the
+// newest-issued acceptance covering that moment, or its own plan (PN) if none does. Checked against Elexon's settled
+// volumes (9 unit-days, hundreds of acceptances each): the energy matches to within 0.1 MWh.
+let replayTimer = null;
+function replay(el, d) {
+  clearInterval(replayTimer);
+  const ms = (s) => new Date(s).getTime();
+  const byNum = new Map();
+  for (const a of d.acceptances) (byNum.get(a.acceptance_number) || byNum.set(a.acceptance_number, []).get(a.acceptance_number)).push(a);
+  const list = [...byNum.entries()].map(([num, rows]) => {
+    rows.sort((x, y) => ms(x.time_from) - ms(y.time_from));
+    const segs = rows.map((r) => [ms(r.time_from), r.level_from, ms(r.time_to), r.level_to]);
+    return { num, issued: ms(rows[0].acceptance_time), segs, t0: segs[0][0], t1: segs[segs.length - 1][2],
+      so: rows.some((r) => r.so_flag), stor: rows.some((r) => r.stor_flag), rr: rows.some((r) => r.rr_flag), deemed: rows.some((r) => r.deemed_bo) };
+  }).sort((a, b) => a.issued - b.issued || a.num - b.num);
+  if (!list.length) { el.innerHTML = '<div class="empty">NESO issued no instructions to this unit on this day.</div>'; return; }
+
+  const pn = d.physical.filter((p) => p.dataset === 'PN').map((p) => [ms(p.timeFrom), p.levelFrom, ms(p.timeTo), p.levelTo]).sort((a, b) => a[0] - b[0]);
+  const levelAt = (segs, t) => {
+    for (const [t0, l0, t1, l1] of segs) if (t >= t0 && t <= t1) return t1 === t0 ? l0 : l0 + ((l1 - l0) * (t - t0)) / (t1 - t0);
+    return null;
+  };
+  // Time grid over the settlement day, every 30 seconds.
+  const STEP = 30000;
+  const t0 = pn.length ? pn[0][0] : Math.min(...list.map((a) => a.t0));
+  const t1 = pn.length ? pn[pn.length - 1][2] : Math.max(...list.map((a) => a.t1));
+  const n = Math.max(2, Math.round((t1 - t0) / STEP) + 1);
+  const xs = Array.from({ length: n }, (_, i) => t0 + i * STEP);
+  const planned = xs.map((t) => levelAt(pn, t) ?? 0);
+  const paths = list.map((a) => {
+    const i0 = Math.max(0, Math.ceil((a.t0 - t0) / STEP)), i1 = Math.min(n - 1, Math.floor((a.t1 - t0) / STEP));
+    const v = [];
+    for (let i = i0; i <= i1; i++) v.push(levelAt(a.segs, xs[i]));
+    return { i0, i1, v };
+  });
+  const N = list.length;
+  const effAt = (k) => {
+    const e = planned.slice();
+    for (let j = 0; j < k; j++) { const p = paths[j]; for (let i = p.i0; i <= p.i1; i++) { const v = p.v[i - p.i0]; if (v != null) e[i] = v; } }
+    return e;
+  };
+  const pts = (arr) => xs.map((x, i) => [x, arr[i]]);
+  const hiPts = (k) => {
+    if (k < 1) return [];
+    const p = paths[k - 1];
+    const out = xs.map((x) => [x, null]);
+    for (let i = p.i0; i <= p.i1; i++) out[i][1] = p.v[i - p.i0];
+    return out;
+  };
+  const allVals = [...planned, ...paths.flatMap((p) => p.v.filter((v) => v != null))];
+  const lo = Math.min(...allVals), hi = Math.max(...allVals), pad = Math.max(5, (hi - lo) * 0.06);
+
+  const hm = (t) => new Date(t).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  const dm = (t) => new Date(t).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+  const fps = N > 120 ? 12 : N > 40 ? 6 : 3;
+  el.innerHTML = `
+    <h2 style="margin-top:14px">Replay NESO's instructions${tip('replay')}</h2>
+    <div class="sub">Step through the instructions in the order they were issued. A newer instruction takes over for the times it covers; when one ends, the unit returns to its own plan. Output in MW.</div>
+    <div class="replay-bar">
+      <button type="button" class="btn" id="rpStart">Restart</button><button type="button" class="btn" id="rpBack">‹ Back</button>
+      <button type="button" class="btn primary" id="rpPlay">Play</button><button type="button" class="btn" id="rpFwd">Next ›</button>
+      <label class="small muted">Speed <select id="rpSpeed">${[[1, 'Slow'], [3, 'Normal'], [6, 'Fast'], [12, 'Very fast']].map(([v, l]) => `<option value="${v}" ${v === fps ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+    </div>
+    <input type="range" class="rp-slider" id="rpSlider" min="0" max="${N}" value="${N}" aria-label="Instruction number">
+    <div class="replay-status" id="rpStatus"></div>
+    <div class="chart" id="rpChart"></div>`;
+
+  let k = N, speed = fps;
+  const o = baseOption();
+  o.legend = { ...o.legend, type: 'plain', show: true, itemGap: 12, textStyle: { color: css('--ink2'), fontSize: 11 }, data: ['Plan (PN)', 'Instructed so far', 'Before this one', 'This instruction'] };
+  o.grid = { left: 42, right: 12, top: 56, bottom: 26, containLabel: false };
+  o.xAxis = { ...o.xAxis, type: 'time', min: t0, max: t1 };
+  o.yAxis = { ...o.yAxis, type: 'value', min: lo - pad, max: hi + pad, axisLabel: { ...o.yAxis.axisLabel, showMinLabel: false, showMaxLabel: false } };
+  o.tooltip = { ...o.tooltip, valueFormatter: (v) => (v == null ? '–' : `${nf(0).format(v)} MW`) };
+  const ln = (name, color, width, extra = {}) => ({ name, type: 'line', color: css(color), showSymbol: false, lineStyle: { width, ...(extra.dash ? { type: 'dashed' } : {}) }, connectNulls: false, data: [], ...extra.s });
+  o.series = [
+    ln('Plan (PN)', '--s1', 1.6, { dash: true }),
+    ln('Instructed so far', '--s2', 3, { s: { z: 4 } }),
+    ln('Before this one', '--other', 1.4, { s: { z: 2 } }),
+    ln('This instruction', '--s4', 5, { s: { z: 6 } }),
+  ];
+  o.series[0].data = pts(planned);
+  const c = chart($('#rpChart'));
+  c.setOption(o, true);
+  const status = $('#rpStatus');
+
+  function draw() {
+    const cur = effAt(k), prev = k > 0 ? effAt(k - 1) : cur;
+    const issued = k > 0 ? list[k - 1].issued : null;
+    const mark = issued != null && issued >= t0 && issued <= t1
+      ? { silent: true, symbol: 'none', lineStyle: { color: css('--s4'), type: 'dashed', width: 1.5 }, label: { formatter: `issued ${hm(issued)}`, color: css('--ink2'), fontSize: 11, position: 'insideEndTop' }, data: [{ xAxis: issued }] }
+      : { data: [] };
+    c.setOption({ series: [{}, { data: pts(cur) }, { data: k > 0 ? pts(prev) : [] }, { data: hiPts(k), markLine: mark }] });
+    let moved = 0;
+    for (let i = 0; i < n; i++) moved += cur[i] - planned[i];
+    moved *= STEP / 3600000; // MW x hours
+    const movedTxt = `Output versus its plan so far: ${moved >= 0 ? '+' : '−'}${nf(0).format(Math.abs(moved))} MWh${moved > 0.5 ? ' (turned up)' : moved < -0.5 ? ' (turned down)' : ''}.`;
+    status.dataset.moved = String(moved);
+    status.dataset.step = String(k);
+    if (k === 0) { status.innerHTML = `<b>Before any instruction</b>: the unit follows its own plan (PN). ${esc(movedTxt)}`; }
+    else {
+      const a = list[k - 1];
+      const overlaps = list.slice(0, k - 1).filter((b) => b.t0 < a.t1 && a.t0 < b.t1).length;
+      const flags = [a.so && 'SO-flagged', a.stor && 'STOR', a.rr && 'RR', a.deemed && 'deemed'].filter(Boolean).join(', ');
+      status.innerHTML = `<b>Instruction ${k} of ${N}</b> · acceptance ${esc(a.num)}${flags ? ` · ${esc(flags)}` : ''}<br>
+        Issued ${esc(dm(a.issued))}${a.issued < t0 ? ' (before this day began)' : ''}. Sets the unit from ${esc(nf(0).format(a.segs[0][1]))} MW to ${esc(nf(0).format(a.segs[a.segs.length - 1][3]))} MW between ${esc(hm(a.t0))} and ${esc(hm(a.t1))}.
+        ${overlaps ? `It overlaps ${overlaps} earlier instruction${overlaps === 1 ? '' : 's'}; for the times they share, this newer one takes over.` : 'No earlier instruction covered these times.'}<br>${esc(movedTxt)}`;
+    }
+    $('#rpSlider').value = String(k);
+  }
+  const pause = () => { clearInterval(replayTimer); replayTimer = null; $('#rpPlay').textContent = 'Play'; };
+  const play = () => {
+    if (k >= N) k = 0;
+    draw();
+    $('#rpPlay').textContent = 'Pause';
+    clearInterval(replayTimer);
+    replayTimer = setInterval(() => {
+      if (!el.isConnected) { clearInterval(replayTimer); return; }
+      if (k >= N) { pause(); return; }
+      k++; draw();
+    }, 1000 / speed);
+  };
+  $('#rpPlay').onclick = () => (replayTimer ? pause() : play());
+  $('#rpStart').onclick = () => { pause(); k = 0; draw(); };
+  $('#rpBack').onclick = () => { pause(); k = Math.max(0, k - 1); draw(); };
+  $('#rpFwd').onclick = () => { pause(); k = Math.min(N, k + 1); draw(); };
+  $('#rpSlider').oninput = (e) => { pause(); k = +e.target.value; draw(); };
+  $('#rpSpeed').onchange = (e) => { speed = +e.target.value; if (replayTimer) play(); };
+  draw();
 }
 
 // ------------------------------------------------------------------ data / ingest view

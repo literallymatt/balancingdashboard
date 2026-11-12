@@ -161,3 +161,11 @@ button.btn.small { padding: 3px 10px; font-size: 12px; }
   #coverage { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 calc(100% - 84px); min-width: 0; }
   #dbgBtn { order: 4; margin-left: auto; }
 }
+
+/* ---- instruction replay ---- */
+.replay { margin-top: 6px; }
+.replay-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0 6px; }
+.rp-slider { width: 100%; accent-color: var(--s1); margin: 4px 0 6px; }
+.replay-status { font-size: 13px; line-height: 1.5; color: var(--ink2); min-height: 6.2em; margin-bottom: 4px; }
+.replay-status b { color: var(--ink); }
+@media (max-width: 700px) { .replay-status { min-height: 8.4em; } }
