@@ -176,7 +176,13 @@ SQLite (see "What is stored" below).
   pay-as-bid, so each has its own price. The tab shows the volume-weighted average (cost / volume), the highest and lowest single
   trade, and a clearing price: the marginal trade in each half-hour (the dearest NESO bought, the cheapest it sold), averaged over
   the half-hours with trades. The *Trade prices* chart shows these over time for purchases or sales, and *Price details* per link
-  for the period shown. Each stored row keeps its highest and lowest single-trade price for this (`price_max`, `price_min`); stores
+  for the period shown. **Finding expensive half-hours**: the day x settlement-period grid colours by clearing price by default
+  (or average price, or net volume); over one or two days it becomes a bar per half-hour, coloured by the interconnector that set
+  the clearing price. A *Peak clearing price* KPI jumps to the range's dearest half-hour. Clicking a half-hour fills **Who set the
+  price**: every link x counterparty that traded in it, dearest first (cheapest first for sales), with the marginal ones starred;
+  over a longer period it ranks them by their dearest trade and counts the half-hours in which each set the clearing price
+  (`/api/ic/trades`). The map can colour each link by its clearing price (★ marks the link that set it), and the time chart has a
+  *Clearing price* measure split by link or counterparty. Each stored row keeps its highest and lowest single-trade price for this (`price_max`, `price_min`); stores
   from before these columns existed are reset and backfilled on the next refresh. Trades come out of the same monthly
   DISBSAD download as the Total costs figures, so they cost no extra requests; flows are one `FUELHH` request a month. The first
   refresh after upgrading backfills from April 2025 (about two minutes); later refreshes re-fetch the current month. Stored in

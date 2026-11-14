@@ -206,6 +206,25 @@ object Interconnectors {
         return mapOf("rows" to rows)
     }
 
+    /** Who set the price: priced trades per link x counterparty x trade type x SO flag for one direction, with the number of
+     *  half-hours each group held the marginal trade. Mirrors api.ic_trades. */
+    fun trades(db: SqlDb, f: Filter, dir: String): Map<String, Any?> {
+        val (sign, best, col) = when (dir) {
+            "buy" -> Triple(">", "max", "price_max")
+            "sell" -> Triple("<", "min", "price_min")
+            else -> throw HttpError(400, "bad dir")
+        }
+        val order = if (dir == "buy") "price_max DESC" else "price_min ASC"
+        val rows = db.query("""WITH t AS (SELECT * FROM ic_trade WHERE ${f.sql} AND volume $sign 0 AND cost <> 0),
+                h AS (SELECT settlement_date, sp, $best($col) AS m FROM t GROUP BY 1, 2)
+            SELECT t.ic AS ic, t.party AS party, ${DIMS.getValue("kind")} AS kind, ${DIMS.getValue("so")} AS so,
+                   sum(t.volume) AS vol, sum(t.cost) AS cost, max(t.price_max) AS price_max, min(t.price_min) AS price_min,
+                   sum(t.n) AS n_trades, count(*) AS n_hh, sum(CASE WHEN t.$col = h.m THEN 1 ELSE 0 END) AS n_marginal
+            FROM t JOIN h ON t.settlement_date = h.settlement_date AND t.sp = h.sp
+            GROUP BY 1, 2, 3, 4 ORDER BY $order, 1, 2, 3, 4""", f.params)
+        return mapOf("rows" to rows)
+    }
+
     fun flow(db: SqlDb, from: String, to: String, b: String, ic: String?): Map<String, Any?> {
         val vals = (ic ?: "").split("|").filter { it.isNotEmpty() }
         val cond = if (vals.isEmpty()) "" else " AND ic IN (${vals.joinToString(",") { "?" }})"
