@@ -20,6 +20,9 @@ app = FastAPI(title="bmdash")
 
 _con = None
 _con_lock = threading.Lock()
+# A dashboard page fires about eight queries at once and each one opens a Parquet file per held day, so
+# run only a couple at a time: it keeps open-file use (and memory) bounded however much data is held.
+_query_slots = threading.BoundedSemaphore(2)
 
 
 def q(sql: str, params: list | None = None) -> list[dict]:
@@ -27,13 +30,14 @@ def q(sql: str, params: list | None = None) -> list[dict]:
     with _con_lock:
         if _con is None:
             _con = store.connect()
-    cur = _con.cursor()
-    try:
-        cur.execute(sql, params or [])
-        cols = [c[0] for c in cur.description]
-        return [dict(zip(cols, r)) for r in cur.fetchall()]
-    finally:
-        cur.close()
+    with _query_slots:
+        cur = _con.cursor()
+        try:
+            cur.execute(sql, params or [])
+            cols = [c[0] for c in cur.description]
+            return [dict(zip(cols, r)) for r in cur.fetchall()]
+        finally:
+            cur.close()
 
 
 # ---------------------------------------------------------------- query building
