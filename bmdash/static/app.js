@@ -14,7 +14,7 @@ const DIM_LABEL = { direction: 'Direction', tech: 'Technology', fuel: 'Fuel type
   unit: 'BM unit', unit_type: 'BMU type', gsp: 'GSP group', pair: 'Bid-offer pair', so: 'SO flag' };
 const DIMS = Object.keys(DIM_LABEL);
 const state = { view: 'overview', unit: null, from: null, to: null, bucket: 'auto',
-  metric: 'net', split: 'tech', bdim: 'party', filters: {}, day: null };
+  metric: 'net', split: 'tech', bdim: 'party', filters: {}, day: null, bnd: null, cmetric: 'bind', cview: 'boundary' };
 let META = { days: [] };
 
 function readHash() {
@@ -23,7 +23,8 @@ function readHash() {
   state.view = parts[0] || 'overview';
   state.unit = state.view === 'unit' ? decodeURIComponent(parts[1] || '') : null;
   const unitView = state.view === 'unit';
-  Object.assign(state, { bucket: 'auto', metric: 'net', split: unitView ? 'direction' : 'tech', bdim: unitView ? 'pair' : 'party', day: null });
+  Object.assign(state, { bucket: 'auto', metric: 'net', split: unitView ? 'direction' : 'tech', bdim: unitView ? 'pair' : 'party', day: null,
+    bnd: null, cmetric: 'bind', cview: 'boundary' });
   const p = new URLSearchParams(qs || '');
   state.filters = {};
   for (const [k, v] of p) {
@@ -36,6 +37,7 @@ function writeHash(replace = false) {
   const p = new URLSearchParams();
   for (const k of ['from', 'to', 'bucket', 'metric', 'split', 'bdim']) if (state[k]) p.set(k, state[k]);
   if (state.view === 'unit' && state.day) p.set('day', state.day);
+  if (state.view === 'constraints') for (const k of ['bnd', 'cmetric', 'cview']) if (state[k]) p.set(k, state[k]);
   for (const [k, v] of Object.entries(state.filters)) if (v.length) p.set('f.' + k, v.join('|'));
   const path = state.view === 'unit' ? `unit/${encodeURIComponent(state.unit)}` : state.view;
   const h = `#/${path}?${p}`;
@@ -509,6 +511,14 @@ const GLOSS = {
   eac: ['Response and reserve availability (EAC)', 'Availability payments for frequency response (DC, DM, DR) and reserve (QR, SR, BR), bought in NESO\'s daily EAC auctions: cleared MW x clearing price x hours. This is only part of NESO\'s ancillary services, and it is not part of the BM or non-BM totals.'],
   purposes: ['Purposes', 'NESO tags each balancing action with its main reason. Constraints are network limits (for example moving power around a congested line); energy imbalance, positive and negative reserve cover the national supply and demand balance; frequency control keeps the grid at 50 Hz. Tagging is best-endeavours.'],
   partialmonth: ['Partial months', 'NESO publishes its daily cost data with a lag of a few days, and a day only counts once most of its settlement periods are in. A faded bar is a month where some days are not yet published, so it is lower than the full month will be.'],
+  constraints: ['Network constraints', 'The transmission network can only carry so much power across certain lines, called boundaries. When more power wants to flow across one than it can safely carry, NESO has to "constrain": pay generators on the exporting side to turn down (often Scottish wind) and others on the importing side to turn up. This tab shows when and where that was expected, and what it cost.'],
+  boundary: ['Boundaries', 'A boundary is a line across the map that the network\'s circuits cross, such as the Scotland-England border (SCOTEX, also called B6). NESO watches the power flowing across each one against a limit. Positions on the map are schematic, drawn from NESO\'s network diagrams.'],
+  atlimit: ['At or over the limit', 'The share of half-hours in which the flow NESO forecast across a boundary the day before was at or above the boundary\'s limit, meaning NESO expected to need constraint actions there. Average loading is the forecast flow as a share of the limit; energy over the limit adds up how far the forecast exceeded it (MW x half an hour).'],
+  loading: ['Average loading', 'Forecast flow divided by the limit, averaged over the half-hours. 100% means the boundary was forecast to be full; above 100% NESO expected to act. Negative means power was forecast to flow the other way.'],
+  excess: ['Energy over the limit', 'How far the forecast flow exceeded the limit, added up over the half-hours, in MWh. A rough guide to how much generation NESO expected to have to move, not a measured volume.'],
+  dayahead: ['Day-ahead forecast', 'NESO publishes, for each boundary, the limit and forecast flow for every half-hour of the next day. They are a snapshot taken the day before and are not updated afterwards, so they show where NESO expected trouble rather than metered flows. The latest day is usually tomorrow.'],
+  constraintcost: ['Constraint costs', 'What NESO spent on constraint actions, per day, from its own published outturn. "Thermal cost" is broken down for NESO\'s main boundary groups, which are coarser than the boundaries on the map (for example SSE-SP covers SSE_SP2). Published per day, a few days late.'],
+  reasons: ['Reasons for constraint actions', 'NESO splits its constraint costs by reason. Thermal: a line would overheat (the boundaries on this tab). Voltage: keeping voltage within limits in an area. System inertia: keeping enough spinning machines on to steady frequency. Largest loss: limiting the biggest single source that could trip.'],
   amendment: ['Amendment', 'Whether the record is the original acceptance (ORI) or a later change to an earlier one, for example an update or deletion.'],
 };
 const tip = (k) => (GLOSS[k] ? `<button type="button" class="info" data-tip="${k}" aria-label="What does ${esc(GLOSS[k][0])} mean?">i</button>` : '');
@@ -995,6 +1005,377 @@ function drawCosts() {
   table($('#costTable'), cols, rows, { limit: 40 });
 }
 
+// ------------------------------------------------------------------ network constraints (system-level, no unit detail)
+
+// Transmission boundaries in NESO's day-ahead data, north to south. `line` is a schematic [lon, lat] path drawn from
+// NESO's network diagrams: good enough to show which part of the country a boundary splits, not a survey.
+const BOUNDARY = {
+  SSEN_S: { name: 'SSEN South', region: 'North Scotland', line: [[-5.7, 56.9], [-4.6, 56.8], [-3.6, 56.68], [-2.55, 56.6]] },
+  ERROEX: { name: 'Errochty export', region: 'North Scotland', line: [[-4.25, 56.85], [-4.0, 56.72], [-3.85, 56.62]] },
+  SSE_SP: { name: 'SSE–SP (north–south Scotland)', region: 'Scotland', line: [[-5.6, 55.75], [-4.9, 56.15], [-4.0, 56.3], [-2.9, 56.45]] },
+  SSE_GRMO: { name: 'SSE–Glasgow west', region: 'Central Scotland', line: [[-5.0, 55.85], [-4.4, 56.02], [-3.75, 56.02]] },
+  NKILGRMO: { name: 'Central belt east', region: 'Central Scotland', line: [[-4.45, 56.06], [-4.05, 55.85], [-3.25, 55.85]] },
+  GALLEX: { name: 'Galloway export', region: 'South West Scotland', line: [[-5.05, 55.12], [-4.4, 55.2], [-3.75, 55.05]] },
+  SCOTEX: { name: 'Scotland–England (B6)', region: 'Anglo-Scottish border', line: [[-3.25, 54.95], [-2.65, 55.1], [-2.25, 55.45], [-2.03, 55.78]] },
+  HARSPNBLY: { name: 'Harker–Blyth (North East)', region: 'North East England', line: [[-3.15, 54.75], [-2.3, 54.8], [-1.4, 54.72]] },
+  SSHARN: { name: 'Scotland + north England (SSHARN)', region: 'Northern England', line: [[-3.05, 54.0], [-2.25, 53.9], [-1.55, 54.2], [-0.85, 54.5]] },
+  SHARN: { name: 'Scotland + north England (SHARN)', region: 'Northern England', line: [[-3.05, 53.95], [-2.25, 53.85], [-1.55, 54.15], [-0.85, 54.45]] },
+  GM_SNOW: { name: 'Heysham / north-west coast', region: 'North West England', line: [[-3.15, 54.2], [-2.75, 54.1], [-2.55, 53.85]] },
+  DRESHEX: { name: 'Drax area export', region: 'Yorkshire', line: [[-1.45, 53.85], [-0.95, 53.7], [-0.6, 53.55]] },
+  FLOWSTH: { name: 'Flow south (Midlands)', region: 'Midlands', line: [[-3.0, 52.75], [-1.8, 52.85], [-0.9, 52.9], [0.2, 52.85]] },
+  SWALEX: { name: 'South Wales export', region: 'South Wales', line: [[-3.95, 51.78], [-3.3, 51.82], [-2.7, 51.66]] },
+  SEIMP: { name: 'South East / London import', region: 'London and South East', line: [[-1.0, 51.3], [-0.8, 51.75], [0.1, 51.88], [0.75, 51.62]] },
+  ESTEX: { name: 'Thames estuary / Kent export', region: 'South East', line: [[0.35, 51.58], [0.7, 51.36], [1.05, 51.22]] },
+  ESTEX3: { name: 'Kent (Kemsley/Grain) export 3', region: 'South East', line: [[0.5, 51.5], [0.8, 51.32]] },
+  ESTEX4: { name: 'Kent (Kemsley/Grain) export 4', region: 'South East', line: [[0.6, 51.52], [0.9, 51.34]] },
+  CANDUNEX: { name: 'Canterbury–Dungeness export', region: 'Kent coast', line: [[1.15, 51.28], [0.95, 50.98]] },
+  CANSELEX: { name: 'Canterbury–Sellindge export', region: 'Kent coast', line: [[1.25, 51.25], [1.0, 51.1]] },
+  DUNSELEX: { name: 'Dungeness–Sellindge export', region: 'Kent coast', line: [[0.95, 50.95], [1.0, 51.1]] },
+  NINSELEX: { name: 'Ninfield–Sellindge export', region: 'Kent coast', line: [[0.4, 50.88], [0.8, 51.05], [1.0, 51.1]] },
+  BOLSELEX: { name: 'Bolney–Sellindge export', region: 'Kent coast', line: [[-0.2, 50.98], [0.4, 51.05], [1.0, 51.12]] },
+};
+const BOUNDARY_ORDER = Object.keys(BOUNDARY);
+/** NESO renames boundaries as the network changes (SSE_SP2, SEIMPPR23, SSHARN3...): map a code to its family. */
+function bfam(code) {
+  const c = String(code).toUpperCase().replace(/-/g, '_');
+  if (BOUNDARY[c]) return c;
+  const s = c.replace(/PR\d+$/, '').replace(/\d+[A-Z]?$/, '');
+  return BOUNDARY[s] ? s : c;
+}
+const bname = (code) => BOUNDARY[bfam(code)]?.name || code;
+const bidx = (code) => { const i = BOUNDARY_ORDER.indexOf(bfam(code)); return i < 0 ? 99 : i; };
+const pct = (v) => (v == null || !isFinite(v) ? '–' : `${nf(v < 0.1 && v > 0 ? 1 : 0).format(100 * v)}%`);
+const mw = (v) => (v == null || !isFinite(v) ? '–' : `${nf(0).format(v)} MW`);
+
+const CMETRICS = {
+  bind: { label: 'Time at or over the limit', short: 'At limit', fmt: pct, f: (r) => ratio(r.n_bind, r.n) },
+  load: { label: 'Average loading (flow ÷ limit)', short: 'Avg loading', fmt: pct, f: (r) => r.load_avg },
+  excess: { label: 'Energy over the limit', short: 'Over limit', fmt: mwh, f: (r) => r.excess_mwh },
+};
+const CTYPE_LABEL = { thermal: 'Thermal', voltage: 'Voltage', inertia: 'System inertia', largest_loss: 'Largest loss' };
+const CTYPE_COLOUR = { thermal: '--s1', voltage: '--s2', inertia: '--s3', largest_loss: '--s4' };
+// NESO's thermal cost groups, coloured by entity so a group keeps its colour whatever else is in range.
+const THERMAL_COLOUR = { SSE_SP: '--s1', SCOTEX: '--s2', SSHARN: '--s3', SWALEX: '--s4', SEIMP: '--s5', ESTEX: '--s6' };
+let CMETA = { min: null, max: null }, GB_MAP = null;
+
+async function loadCMeta() { CMETA = await api('constraints/meta'); }
+
+const tipLines = (title, lines) => `<div class="tt"><div class="t">${esc(title)}</div>${lines.filter(Boolean).map((l) => `<div class="r"><span>${esc(l)}</span></div>`).join('')}</div>`;
+
+/** Linear blend of two #rrggbb colours. */
+function mix(a, b, t) {
+  const p = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+  const [x, y] = [p(a), p(b)];
+  return `rgb(${x.map((v, i) => Math.round(v + (y[i] - v) * Math.max(0, Math.min(1, t)))).join(',')})`;
+}
+
+async function viewConstraints(main) {
+  if (!CMETA.max) {
+    main.innerHTML = `<div class="card"><h2>Network constraints${tip('constraints')}</h2>
+      <div class="empty">No constraint data yet. <button type="button" class="btn" id="conRefresh">Download it</button> (about two minutes; it is fetched with the Total costs data).</div></div>`;
+    wireConRefresh();
+    return;
+  }
+  const m = CMETRICS[state.cmetric] ? state.cmetric : 'bind';
+  main.innerHTML = `
+  <div class="grid kpis" id="conKpis"></div>
+  <div class="grid cols2" style="margin-top:0">
+    <div class="card">
+      <div class="card-head"><div><h2>Where the network was constrained${tip('boundary')}</h2><div class="sub" id="mapNote"></div></div>
+        <div class="controls"><label class="small muted">Colour by ${select('cmetric', Object.entries(CMETRICS).map(([k, v]) => [k, v.label]), m)}${tip('atlimit')}</label></div></div>
+      <div class="chart" id="conMap" style="height:560px"></div>
+      <div id="mapKey" class="small muted" style="display:flex;align-items:center;gap:8px;justify-content:center"></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><div><h2>Boundaries</h2><div class="sub">Totals for the selected range. Click a boundary to see it in detail.</div></div></div>
+      <div id="conTable"></div>
+    </div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <div class="card-head"><div><h2>${esc(CMETRICS[m].label)}, by boundary over time${tip('dayahead')}</h2><div class="sub">Day-ahead forecast, north at the top. Click a cell to zoom into that period.</div></div></div>
+    <div class="chart tall" id="conHeat"></div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <div class="card-head"><div><h2 id="detailTitle">Boundary detail</h2><div class="sub" id="detailNote"></div></div>
+      <div class="controls"><label class="small muted">Boundary <select id="bnd"></select></label></div></div>
+    <div class="chart" id="conDetail"></div>
+    <div class="small muted" style="margin:6px 0 0">Share of half-hours at or over the limit</div>
+    <div class="chart short" id="conDetailBind" style="height:150px"></div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <div class="card-head"><div><h2>Constraint costs${tip('constraintcost')}</h2><div class="sub" id="ccNote"></div></div>
+      <div class="controls"><label class="small muted">View ${select('cview', [['boundary', 'By boundary (thermal only)'], ['type', 'By reason']], state.cview === 'type' ? 'type' : 'boundary')}${tip('reasons')}</label>
+        <button class="btn" id="ccToggle">Table</button></div></div>
+    <div class="chart" id="conCosts"></div>
+    <div id="conCostsTable" hidden></div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <h2>About this data</h2>
+    <div class="small muted" style="line-height:1.55;margin-top:6px">
+      <b style="color:var(--ink)">Boundaries</b> are NESO's day-ahead constraint flows and limits: for each transmission boundary and half-hour, the most power the boundary can safely carry (limit) and the flow NESO forecast across it the day before. A forecast at or over the limit means NESO expected to have to act, typically turning generation down on the exporting side (often Scottish wind) and up on the other. These are forecasts, not metered flows, and NESO renames boundaries as the network changes (for example SSE_SP became SSE_SP2), so a boundary may only cover part of the range. Map positions are schematic, drawn from NESO's network diagrams.<br>
+      <b style="color:var(--ink)">Costs</b> are NESO's daily outturn: thermal constraint cost for its main boundary groups, and total constraint cost split by reason. They are only published per day, a few days late.<br>
+      <b style="color:var(--ink)">What actually happened</b>: the BM actions NESO took for constraints carry the SO flag. <a href="#" id="soLink">See the SO-flagged BM actions by technology and unit</a> in the Overview (most are transmission-connected, so GSP group says little) (unit data held: ${esc(META.min || 'none')} to ${esc(META.max || '')}).
+    </div>
+    <div class="small muted" id="conMeta" style="margin-top:8px"></div>
+    <button type="button" class="btn" id="conRefresh" style="margin-top:8px">Refresh data</button>
+  </div>`;
+  $('#cmetric').onchange = (e) => update({ cmetric: e.target.value }, true);
+  $('#cview').onchange = (e) => update({ cview: e.target.value }, true);
+  $('#ccToggle').onclick = () => { const t = $('#conCostsTable'); t.hidden = !t.hidden; $('#conCosts').hidden = !t.hidden; $('#ccToggle').textContent = t.hidden ? 'Table' : 'Chart'; if (t.hidden) charts.get($('#conCosts'))?.resize(); };
+  $('#soLink').onclick = (e) => {
+    e.preventDefault();
+    const to = META.max && state.to > META.max ? META.max : state.to, from = META.min && state.from < META.min ? META.min : state.from;
+    Object.assign(state, { view: 'overview', from, to: to < from ? from : to, split: 'tech', bdim: 'unit', filters: { so: ['SO-flagged'] } });
+    writeHash();
+  };
+  const upd = CMETA.updated_at ? new Date(CMETA.updated_at * 1000).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : null;
+  $('#conMeta').textContent = `Boundary data ${CMETA.min} to ${CMETA.max} (the last day is tomorrow's forecast once NESO publishes it) · costs through ${CMETA.costs_through || 'n/a'}${upd ? ` · refreshed ${upd}` : ''}${CMETA.error ? ` · some sources failed: ${CMETA.error}` : ''}`;
+  wireConRefresh();
+
+  const bucket = resolveBucket();
+  const [tot, agg, cc] = await Promise.all([
+    api('constraints/agg', { from: state.from, to: state.to, bucket: 'none' }),
+    api('constraints/agg', { from: state.from, to: state.to, bucket }),
+    api('constraints/costs', { from: state.from, to: state.to, bucket: 'none' }),
+  ]);
+  const totals = tot.rows.filter((r) => r.g !== '_any').map((r) => ({ ...r, fam: bfam(r.g) }));
+  const any = tot.rows.find((r) => r.g === '_any');
+  // Thermal cost per boundary family over the range (NESO's cost groups are coarser than the flow boundaries).
+  const thermal = {};
+  for (const r of cc.rows) if (r.source === 'thermal') thermal[bfam(r.category)] = (thermal[bfam(r.category)] || 0) + r.v;
+  const ctype = Object.fromEntries(cc.rows.filter((r) => r.source === 'constraint_type').map((r) => [r.category, r.v]));
+  const ctotal = Object.values(ctype).reduce((a, v) => a + (v || 0), 0);
+  // Rank by hours at the limit, not share: a boundary published for one day can be "100% of the time".
+  const ranked = [...totals].sort((a, b) => b.n_bind - a.n_bind);
+  if (!state.bnd || !totals.some((r) => r.g === state.bnd)) state.bnd = ranked[0]?.g || null;
+
+  const top = ranked[0], costDays = cc.rows.find((r) => r.source === 'constraint_type')?.n || 0;
+  const topCost = Object.entries(thermal).sort((a, b) => b[1] - a[1])[0];
+  $('#conKpis').innerHTML = [
+    kpi('Constraint costs', gbp(ctotal), costDays ? `${pct(ratio(ctype.thermal, ctotal))} thermal · ${costDays} day${costDays === 1 ? '' : 's'} published` : 'none published for this range yet', 'constraintcost'),
+    kpi('Biggest thermal cost', topCost ? bname(topCost[0]) : '–', topCost ? `${gbp(topCost[1])} in this range` : 'no thermal cost data in range', 'reasons'),
+    kpi('Half-hours with a boundary at its limit', pct(any && ratio(any.n_bind, any.n)), any ? `${nf(0).format(any.n_bind)} of ${nf(0).format(any.n)} half-hours (forecast)` : '', 'atlimit'),
+    kpi('Most often at its limit', top ? bname(top.g) : '–', top ? `${pct(ratio(top.n_bind, top.n))} of the time · ${nf(0).format(top.n_bind / 2)} hours` : '', 'boundary'),
+  ].join('');
+
+  const pick = (g) => update({ bnd: g }, true);
+  loading($('#conMap'), () => conMap($('#conMap'), totals, m, pick));
+  conTable($('#conTable'), totals, thermal, pick);
+  loading($('#conHeat'), async () => conHeat($('#conHeat'), agg.rows, bucket, m));
+  $('#bnd').innerHTML = [...totals].sort((a, b) => bidx(a.g) - bidx(b.g) || a.g.localeCompare(b.g))
+    .map((r) => `<option value="${esc(r.g)}" ${r.g === state.bnd ? 'selected' : ''}>${esc(bname(r.g))} (${esc(r.g)})</option>`).join('');
+  $('#bnd').onchange = (e) => pick(e.target.value);
+  loading($('#conDetail'), async () => conDetail(agg.rows, bucket));
+  loading($('#conCosts'), () => conCosts($('#conCosts'), $('#conCostsTable'), bucket));
+}
+
+function wireConRefresh() {
+  const btn = $('#conRefresh');
+  if (!btn) return;
+  btn.onclick = async () => {
+    btn.disabled = true; btn.textContent = 'Refreshing…';
+    try {
+      await fetch('/api/costs/refresh');
+      for (let i = 0; i < 120; i++) { await new Promise((r) => setTimeout(r, 2000)); const d = await api('constraints/meta'); if (!d.running) break; }
+    } finally { btn.disabled = false; btn.textContent = 'Refresh data'; }
+    await loadCMeta();
+    render();
+  };
+}
+
+/** Schematic map of GB with each boundary coloured by the chosen measure over the selected range. */
+async function conMap(el, totals, m, onPick) {
+  if (!GB_MAP) { GB_MAP = await (await fetch('/static/vendor/gb.json')).json(); echarts.registerMap('gb', GB_MAP); }
+  const M = CMETRICS[m];
+  const byFam = new Map();
+  for (const r of totals) {  // several published codes can share a family (renames): keep the one with most data
+    const prev = byFam.get(r.fam);
+    if (BOUNDARY[r.fam] && (!prev || r.n > prev.n)) byFam.set(r.fam, r);
+  }
+  const vals = [...byFam.values()].map((r) => M.f(r) ?? 0);
+  const hi = m === 'excess' ? Math.max(1, ...vals) : m === 'load' ? Math.max(1, ...vals) : Math.max(0.05, ...vals);
+  const lo = css('--seq-lo'), dark = css('--seq-hi');
+  const lines = [], labels = [];
+  for (const fam of BOUNDARY_ORDER) {
+    const b = BOUNDARY[fam], r = byFam.get(fam);
+    if (!r) continue;
+    const v = M.f(r) ?? 0, t = v / hi;
+    lines.push({ name: fam, coords: b.line, r, v, lineStyle: { color: mix(lo, dark, 0.15 + 0.85 * t), width: 3 + 5 * t, opacity: 1, cap: 'round' } });
+    labels.push({ name: fam, value: [...b.line[b.line.length - 1], v], r });
+  }
+  // Selective direct labels: the four boundaries with the highest value.
+  const topFams = new Set([...lines].sort((a, b) => b.v - a.v).slice(0, 4).filter((l) => l.v > 0).map((l) => l.name));
+  $('#mapNote').textContent = `${M.label} over the selected range. ${lines.length} boundaries with data; positions are schematic.`;
+  $('#mapKey').innerHTML = `<span>${esc(M.fmt(0))}</span><span style="width:160px;height:10px;border-radius:2px;background:linear-gradient(90deg,${mix(lo, dark, 0.15)},${dark})"></span><span>${esc(M.fmt(hi))}</span>`;
+  const tipFor = (r) => tipLines(`${bname(r.g)} · ${r.g}`, [BOUNDARY[r.fam]?.region || '',
+    `At or over the limit ${pct(ratio(r.n_bind, r.n))} of the time (${nf(0).format(r.n_bind / 2)} hours)`,
+    `Average loading ${pct(r.load_avg)} · peak ${pct(r.load_max)}`, `Energy over the limit ${mwh(r.excess_mwh)}`]);
+  const o = {
+    animation: false,
+    tooltip: { trigger: 'item', backgroundColor: css('--surface'), borderColor: css('--axis'), textStyle: { color: css('--ink') }, confine: true,
+      formatter: (p) => (p.data?.r ? tipFor(p.data.r) : '') },
+    geo: { map: 'gb', roam: false, silent: true, aspectScale: 0.6, top: 8, bottom: 8,
+      itemStyle: { areaColor: css('--wash'), borderColor: css('--axis'), borderWidth: 0.6 } },
+    series: [
+      { type: 'lines', coordinateSystem: 'geo', polyline: true, data: lines, zlevel: 1, emphasis: { lineStyle: { width: 9 } } },
+      { type: 'scatter', coordinateSystem: 'geo', data: labels, symbolSize: 0, silent: true, zlevel: 2, labelLayout: { hideOverlap: true },
+        label: { show: true, position: 'right', fontSize: 10, color: css('--ink2'),
+          formatter: (p) => (topFams.has(p.name) ? `${bname(p.data.r.g)} ${M.fmt(p.value[2])}` : '') } },
+    ],
+  };
+  const c = chart(el);
+  c.setOption(o, true);
+  c.on('click', (p) => { if (p.data?.r) onPick(p.data.r.g); });
+}
+
+function conTable(el, totals, thermal, onPick) {
+  const seenFam = new Set();
+  const rows = [...totals].sort((a, b) => bidx(a.g) - bidx(b.g)).map((r) => {
+    // Show a family's thermal cost once, against the code with the most data.
+    const best = totals.filter((x) => x.fam === r.fam).sort((a, b) => b.n - a.n)[0] === r && !seenFam.has(r.fam);
+    if (best) seenFam.add(r.fam);
+    return { g: r.g, name: bname(r.g), region: BOUNDARY[r.fam]?.region || '', bind: ratio(r.n_bind, r.n), hours: r.n_bind / 2,
+      load: r.load_avg, peak: r.flow_max, limit: r.limit_avg, excess: r.excess_mwh, cost: best ? thermal[r.fam] ?? null : null, order: bidx(r.g) };
+  });
+  table(el, [
+    { key: 'name', label: 'Boundary', html: (r) => `${esc(r.name)} <span class="muted small">${esc(r.g)}</span>` },
+    { key: 'region', label: 'Region', cls: 'hide-sm' },
+    { key: 'bind', label: 'At limit', num: true, fmt: pct, tip: 'atlimit' },
+    { key: 'hours', label: 'Hours', num: true, fmt: (v) => nf(0).format(v) },
+    { key: 'load', label: 'Avg loading', num: true, fmt: pct, tip: 'loading', cls: 'hide-sm' },
+    { key: 'limit', label: 'Avg limit', num: true, fmt: mw, cls: 'hide-sm' },
+    { key: 'excess', label: 'Over limit', num: true, fmt: mwh, tip: 'excess' },
+    { key: 'cost', label: 'Thermal cost', num: true, fmt: (v) => (v == null ? '–' : gbp(v)), tip: 'constraintcost' },
+  ], rows, { onRow: (r) => onPick(r.g), limit: 60 });
+}
+
+/** Boundary x time-bucket grid, one sequential hue. */
+function conHeat(el, rows, bucket, m) {
+  const M = CMETRICS[m];
+  const data = rows.filter((r) => r.g !== '_any');
+  const cats = allBuckets(bucket, data);
+  const ci = new Map(cats.map((t, i) => [t, i]));
+  const groups = [...new Set(data.map((r) => r.g))].sort((a, b) => bidx(a) - bidx(b) || a.localeCompare(b));
+  const gi = new Map(groups.map((g, i) => [g, i]));
+  const pts = data.filter((r) => ci.has(r.t)).map((r) => ({ value: [ci.get(r.t), gi.get(r.g), M.f(r)], r }));
+  const vals = pts.map((p) => p.value[2]).filter((v) => v != null).sort((a, b) => a - b);
+  const hi = m === 'bind' ? 1 : vals[Math.min(vals.length - 1, Math.floor(0.99 * vals.length))] || 1;
+  const o = baseOption();
+  o.legend.show = false;
+  o.grid = { left: 8, right: 16, top: 8, bottom: 44, containLabel: true };
+  o.tooltip = { ...o.tooltip, trigger: 'item', formatter: (p) => {
+    const r = p.data.r;
+    return tipLines(`${bname(r.g)} · ${bucketLabel(r.t, bucket)}`, [
+      `At or over the limit: ${nf(0).format(r.n_bind)} of ${nf(0).format(r.n)} half-hours (${pct(ratio(r.n_bind, r.n))})`,
+      `Average loading ${pct(r.load_avg)} · peak ${pct(r.load_max)}`,
+      `Flow ${mw(r.flow_avg)} average, ${mw(r.flow_max)} peak · limit ${mw(r.limit_avg)}`,
+      `Energy over the limit ${mwh(r.excess_mwh)}`]);
+  } };
+  o.xAxis = { ...o.xAxis, type: 'category', data: cats.map((t) => bucketLabel(t, bucket)), splitArea: { show: false } };
+  const dupe = (g) => groups.filter((x) => bname(x) === bname(g)).length > 1;
+  o.yAxis = { ...o.yAxis, type: 'category', data: groups.map((g) => (dupe(g) ? `${bname(g)} (${g})` : bname(g))), inverse: true, splitLine: { show: false },
+    axisLabel: { ...o.yAxis.axisLabel, width: el.clientWidth < 560 ? 110 : 200, overflow: 'truncate' } };
+  o.visualMap = { type: 'continuous', orient: 'horizontal', left: 'center', bottom: 0, itemWidth: 10, itemHeight: 160, min: 0, max: hi,
+    calculable: false, dimension: 2, text: [M.fmt(hi), M.fmt(0)], textStyle: { color: css('--muted'), fontSize: 11 },
+    inRange: { color: [css('--seq-lo'), css('--seq-hi')] } };
+  o.series = [{ type: 'heatmap', data: pts, progressive: 0,
+    itemStyle: cats.length <= 60 ? { borderColor: css('--surface'), borderWidth: 1 } : {},
+    emphasis: { itemStyle: { borderColor: css('--ink'), borderWidth: 1 } } }];
+  el.style.height = `${Math.max(260, groups.length * 22 + 80)}px`;
+  const c = chart(el);
+  c.resize();
+  c.setOption(o, true);
+  el.style.cursor = bucket === 'tod' ? 'default' : 'pointer';
+  c.on('click', (p) => {
+    if (bucket === 'tod') return;
+    state.bnd = p.data.r.g;
+    conDrill(p.data.r.t, bucket);
+  });
+}
+
+/** Zoom the Constraints tab into one time bucket (like drillTime, but within this tab's own data range). */
+function conDrill(t, bucket) {
+  const d = String(t).slice(0, 10);
+  if (bucket === 'sp' || bucket === 'hour') return update({ from: d, to: d, bucket: 'auto' });
+  const end = bucket === 'day' ? d : bucket === 'week' ? addDays(d, 6) : iso(new Date(Date.UTC(+d.slice(0, 4), +d.slice(5, 7), 0)));
+  update({ from: d < CMETA.min ? CMETA.min : d, to: end > CMETA.max ? CMETA.max : end, bucket: 'auto' });
+}
+
+/** Forecast flow against the limit for one boundary, plus how often it was at the limit. One axis per chart. */
+function conDetail(rows, bucket) {
+  const g = state.bnd;
+  const mine = rows.filter((r) => r.g === g);
+  const cats = allBuckets(bucket, mine), idx = new Map(cats.map((t, i) => [t, i]));
+  const at = new Array(cats.length).fill(null);
+  for (const r of mine) if (idx.has(r.t)) at[idx.get(r.t)] = r;
+  const fine = bucket === 'sp';
+  $('#detailTitle').innerHTML = `${esc(bname(g))} <span class="muted small">${esc(g || '')}</span>`;
+  $('#detailNote').textContent = fine
+    ? 'Forecast flow and limit for each half-hour (day-ahead). Where the flow line is above the limit, NESO expected to constrain.'
+    : `Average forecast flow and limit per ${bucket === 'tod' ? 'time of day' : bucket}, with the peak half-hour's flow. MW.`;
+  const o = baseOption();
+  o.xAxis = { ...o.xAxis, type: 'category', data: cats.map((t) => bucketLabel(t, bucket)) };
+  o.yAxis = { ...o.yAxis, type: 'value', axisLabel: { ...o.yAxis.axisLabel, formatter: (v) => nf(0).format(v) } };
+  o.tooltip.formatter = (ps) => tipHtml(ps[0].axisValueLabel, ps.map((p) => ({ name: p.seriesName, value: p.value, color: p.color })), mw);
+  const line = (name, color, f, ls = {}) => ({ name, type: 'line', color, symbol: 'circle', symbolSize: cats.length > 60 ? 3 : 6, showAllSymbol: false, step: fine ? 'start' : false,
+    connectNulls: false, lineStyle: { width: 2, color, ...ls }, data: at.map((r) => (r ? f(r) : null)) });
+  o.series = [
+    line(fine ? 'Forecast flow' : 'Average forecast flow', css('--s1'), (r) => r.flow_avg),
+    ...(fine ? [] : [line('Peak forecast flow', css('--s1'), (r) => r.flow_max, { type: 'dashed', width: 1.5, opacity: 0.7 })]),
+    line(fine ? 'Limit' : 'Average limit', css('--s8'), (r) => r.limit_avg),
+  ];
+  chart($('#conDetail')).setOption(o, true);
+
+  const b = baseOption();
+  b.legend.show = false; b.grid = { ...b.grid, top: 8 };
+  b.xAxis = { ...b.xAxis, type: 'category', data: cats.map((t) => bucketLabel(t, bucket)) };
+  b.yAxis = { ...b.yAxis, type: 'value', max: 1, splitNumber: 2, axisLabel: { ...b.yAxis.axisLabel, formatter: (v) => pct(v) } };
+  b.tooltip.formatter = (ps) => { const r = at[ps[0].dataIndex]; return tipHtml(ps[0].axisValueLabel, [{ name: r ? `At or over limit (${r.n_bind} of ${r.n} half-hours)` : 'No data', value: ps[0].value, color: ps[0].color }], pct); };
+  b.series = [{ type: 'bar', barMaxWidth: 20, barCategoryGap: cats.length > 200 ? '0%' : '25%', color: css('--s1'), emphasis: { disabled: true },
+    itemStyle: { borderRadius: [2, 2, 0, 0] }, data: at.map((r) => (r ? ratio(r.n_bind, r.n) : null)) }];
+  chart($('#conDetailBind')).setOption(b, true);
+}
+
+/** Daily constraint costs, stacked by boundary group or by reason. */
+async function conCosts(el, tableEl, bucket) {
+  const view = state.cview === 'type' ? 'type' : 'boundary';
+  const cb = ['sp', 'hour'].includes(bucket) ? 'day' : bucket;
+  if (bucket === 'tod') {
+    el.innerHTML = '<div class="empty">Constraint costs are only published per day, so there is no time-of-day profile. Pick another granularity.</div>';
+    charts.delete(el); tableEl.innerHTML = ''; $('#ccNote').textContent = '';
+    return;
+  }
+  const data = await api('constraints/costs', { from: state.from, to: state.to, bucket: cb });
+  const src = view === 'type' ? 'constraint_type' : 'thermal';
+  const rows = data.rows.filter((r) => r.source === src);
+  const cats = allBuckets(cb, rows), idx = new Map(cats.map((t, i) => [t, i]));
+  const keyTotals = {};
+  for (const r of rows) keyTotals[r.category] = (keyTotals[r.category] || 0) + Math.abs(r.v);
+  const keys = view === 'type' ? Object.keys(CTYPE_LABEL).filter((k) => keyTotals[k])
+    : Object.keys(keyTotals).filter((k) => keyTotals[k]).sort((a, b) => bidx(a) - bidx(b));
+  const label = (k) => (view === 'type' ? CTYPE_LABEL[k] : `${bname(k)} (${k})`);
+  const col = (k) => css(view === 'type' ? CTYPE_COLOUR[k] : THERMAL_COLOUR[bfam(k)] || '--other');
+  $('#ccNote').textContent = `${view === 'type' ? 'NESO\'s daily constraint cost, by reason.' : 'Outturn thermal constraint cost for NESO\'s main boundary groups.'} Published per day${cb !== bucket ? ', so shown per day' : ''}; NESO data through ${data.through || 'n/a'}.`;
+  if (!keys.length) { el.innerHTML = '<div class="empty">No constraint costs published for this range yet.</div>'; charts.delete(el); tableEl.innerHTML = ''; return; }
+  const o = baseOption();
+  o.xAxis = { ...o.xAxis, type: 'category', data: cats.map((t) => bucketLabel(t, cb)) };
+  o.yAxis = { ...o.yAxis, type: 'value', axisLabel: { ...o.yAxis.axisLabel, formatter: (v) => gbp(v) } };
+  o.tooltip.formatter = (ps) => tipHtml(ps[0].axisValueLabel, ps.map((p) => ({ name: p.seriesName, value: p.value, color: p.color })), gbp,
+    ps.reduce((s, p) => s + (p.value || 0), 0));
+  const gap = cats.length <= 70;
+  o.series = keys.map((k, i) => {
+    const d = new Array(cats.length).fill(null);
+    for (const r of rows) if (r.category === k && idx.has(r.t)) d[idx.get(r.t)] = r.v;
+    return { name: label(k), type: 'bar', stack: 'a', barMaxWidth: 28, barCategoryGap: cats.length > 200 ? '0%' : '25%', color: col(k),
+      itemStyle: gap ? { borderColor: css('--surface'), borderWidth: 1 } : {}, emphasis: { disabled: true }, data: d };
+  });
+  chart(el).setOption(o, true);
+  const trows = cats.map((t, i) => ({ t: bucketLabel(t, cb), ...Object.fromEntries(o.series.map((s, j) => ['s' + j, s.data[i]])),
+    total: o.series.reduce((a, s) => a + (s.data[i] || 0), 0) })).filter((r) => o.series.some((_, j) => r['s' + j] != null));
+  table(tableEl, [{ key: 't', label: 'Period' }, ...o.series.map((s, j) => ({ key: 's' + j, label: s.name, num: true, fmt: (v) => gbp(v) })),
+    { key: 'total', label: 'Total', num: true, fmt: (v) => gbp(v) }], trows, { limit: 400 });
+}
+
 // ------------------------------------------------------------------ data / ingest view
 
 let pollTimer = null;
@@ -1179,17 +1560,22 @@ async function loadMeta() {
   $('#coverage').textContent = META.days.length ? `Data held: ${META.min} to ${META.max} (${META.days.length} days)` : 'No data held';
 }
 
+/** The date range the current tab has data for: the Constraints tab has its own, separate from the unit data. */
+const extent = () => (state.view === 'constraints' ? CMETA : META);
+
 function drawFilterBar() {
-  const span = (n) => ({ from: n ? addDays(META.max, -(n - 1)) < META.min ? META.min : addDays(META.max, -(n - 1)) : META.min, to: META.max });
+  const E = extent();
+  const span = (n) => ({ from: n ? addDays(E.max, -(n - 1)) < E.min ? E.min : addDays(E.max, -(n - 1)) : E.min, to: E.max });
   const presets = [['1D', 1], ['7D', 7], ['30D', 30], ['90D', 90], ['1Y', 365], ['All', 0]];
   $('#presets').innerHTML = presets.map(([l, n]) => { const s = span(n); return `<button data-n="${n}" class="${s.from === state.from && s.to === state.to ? 'on' : ''}">${l}</button>`; }).join('');
   $('#presets').querySelectorAll('button').forEach((b) => b.onclick = () => update({ ...span(+b.dataset.n), bucket: 'auto' }));
-  for (const k of ['from', 'to']) { const i = $('#' + k); i.value = state[k]; i.min = META.min; i.max = META.max;
+  for (const k of ['from', 'to']) { const i = $('#' + k); i.value = state[k]; i.min = E.min; i.max = E.max;
     i.onchange = () => { if (i.value) update({ [k]: i.value, ...(k === 'from' && i.value > state.to ? { to: i.value } : {}), ...(k === 'to' && i.value < state.from ? { from: i.value } : {}) }); }; }
   $('#bucket').value = state.bucket;
   $('#bucket').onchange = (e) => update({ bucket: e.target.value }, true);
   const chips = $('#chips');
   chips.innerHTML = '';
+  chips.hidden = state.view === 'constraints'; // unit filters do not apply to system-level constraint data
   for (const [dim, vals] of Object.entries(state.filters)) for (const v of vals) {
     const c = document.createElement('span'); c.className = 'chip';
     c.innerHTML = `<span>${esc(DIM_LABEL[dim] || dim)}: <b></b></span><button title="Remove filter" aria-label="Remove filter">×</button>`;
@@ -1201,13 +1587,15 @@ function drawFilterBar() {
 
 async function render() {
   readHash();
-  if (!META.days.length && state.view !== 'data' && state.view !== 'costs') { state.view = 'data'; }
-  if (META.days.length) {
-    if (!state.to || state.to > META.max) state.to = META.max;
-    if (!state.from || state.from > state.to) state.from = addDays(state.to, -29) < META.min ? META.min : addDays(state.to, -29);
+  if (!META.days.length && !['data', 'costs', 'constraints'].includes(state.view)) { state.view = 'data'; }
+  const E = extent();
+  if (E.max) {
+    if (!state.to || state.to > E.max) state.to = E.max;
+    if (state.view === 'constraints' && state.from && state.from < E.min) state.from = E.min;
+    if (!state.from || state.from > state.to) state.from = addDays(state.to, -29) < E.min ? E.min : addDays(state.to, -29);
   }
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.view === (state.view === 'unit' ? 'units' : state.view)));
-  const noFilters = state.view === 'data' || state.view === 'costs';
+  const noFilters = state.view === 'data' || state.view === 'costs' || (state.view === 'constraints' && !CMETA.max);
   $('#filterbar').hidden = noFilters;
   if (!noFilters) drawFilterBar();
   const main = $('#main');
@@ -1215,6 +1603,7 @@ async function render() {
     if (state.view === 'units') await viewUnits(main);
     else if (state.view === 'unit') await viewUnit(main);
     else if (state.view === 'costs') await viewCosts(main);
+    else if (state.view === 'constraints') await viewConstraints(main);
     else if (state.view === 'data') await viewData(main);
     else viewOverview(main);
   } catch (e) { console.error(e); main.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
@@ -1231,4 +1620,5 @@ document.querySelectorAll('#nav a').forEach((a) => a.onclick = (e) => {
 addEventListener('hashchange', render);
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', render);
 await loadMeta();
+await loadCMeta().catch((e) => console.error(e));
 render();

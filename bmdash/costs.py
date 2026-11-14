@@ -7,6 +7,8 @@ These figures are totals with no unit or asset behind them, so they live apart f
 - ``bsad``: non-BM actions (Elexon BSAD, i.e. trades and system actions outside the Balancing Mechanism). Daily.
 - ``eac``: response and reserve availability payments from NESO's EAC auctions (clearing price x volume x
   window length). Monthly (dated the first of the month).
+- ``thermal`` and ``constraint_type``: daily constraint costs for the Constraints tab, plus the half-hourly
+  boundary flows and limits (see constraints.py).
 
 BM cost is derived as NESO's total minus BSAD: NESO's total covers the BM plus non-BM actions, and that
 difference tracks the unit-level Elexon BM cashflows to within about 1%.
@@ -190,9 +192,12 @@ def ingest_costs(start: date | None = None, end: date | None = None, log=print) 
     start = start or incremental_start()
     end = end or datetime.now(timezone.utc).date()
     store.DATA.mkdir(parents=True, exist_ok=True)
+    from . import constraints  # imports this module, so not at the top
+
     errors, new = [], []
     with httpx.Client(headers={"User-Agent": "bmdash/0.1"}, follow_redirects=True) as client:
-        for name, fn in (("neso_purpose", fetch_purpose), ("eac", fetch_eac), ("bsad", fetch_bsad)):
+        for name, fn in (("neso_purpose", fetch_purpose), ("eac", fetch_eac), ("bsad", fetch_bsad),
+                         ("thermal", constraints.fetch_thermal), ("constraint_type", constraints.fetch_types)):
             try:
                 log(f"  {name}: fetching {start} .. {end}", flush=True) if log is print else log(f"  {name}: fetching")
                 got = fn(client, start, end)
@@ -201,6 +206,16 @@ def ingest_costs(start: date | None = None, end: date | None = None, log=print) 
             except Exception as e:  # a failing source must not discard the others
                 errors.append(f"{name}: {e}")
                 log(f"  {name}: FAILED {e}")
+        # Half-hourly boundary flows and limits have their own file. They are day-ahead forecasts, so tomorrow's
+        # are usually published too.
+        try:
+            hh_end = end + timedelta(days=1)
+            got = constraints.fetch_boundaries(client, start, hh_end)
+            log(f"  boundaries: {len(got)} half-hours")
+            constraints.merge_hh(got, start, hh_end)
+        except Exception as e:
+            errors.append(f"boundaries: {e}")
+            log(f"  boundaries: FAILED {e}")
     fresh = {(s, c) for _, s, c, _ in new}
     sources = {s for s, _ in fresh}
     # replace what this run fetched, within the fetched range; keep everything else

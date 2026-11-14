@@ -30,6 +30,10 @@ object Store {
         // System-level balancing costs (Total costs tab): no unit detail, so kept apart from the BM tables.
         "CREATE TABLE IF NOT EXISTS cost_daily (date TEXT NOT NULL, source TEXT NOT NULL, category TEXT NOT NULL, amount REAL, PRIMARY KEY (date, source, category))",
         "CREATE TABLE IF NOT EXISTS cost_meta (k TEXT PRIMARY KEY, v TEXT)",
+        // Network constraints tab: NESO day-ahead flow and limit per transmission boundary per half-hour. WITHOUT ROWID
+        // stores the rows once, in key order: half the size of a rowid table plus its primary-key index.
+        """CREATE TABLE IF NOT EXISTS constraint_hh (settlement_date TEXT NOT NULL, sp INTEGER NOT NULL, grp TEXT NOT NULL,
+            limit_mw REAL, flow_mw REAL, PRIMARY KEY (settlement_date, grp, sp)) WITHOUT ROWID""",
     )
 
     fun init(db: SqlDb) {
