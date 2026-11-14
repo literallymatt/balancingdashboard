@@ -190,17 +190,26 @@ SQLite (see "What is stored" below).
   delivered. Source: NESO Data Portal, `demand-flexibility` package: the *DFS Utilisation Report Summary* (one row per event
   half-hour: requirement, MW procured, accepted cost, settled volume and cost) and the *DFS Utilisation Report* (one row per bid:
   provider, DFS unit, zone, MW, price, accepted or rejected), for the current year and the 2025/26 archive (which starts in
-  November 2024). The tab shows KPIs (events, procured volume against the requirement, accepted cost, share delivered, providers),
-  the usual time chart (procured volume, accepted cost, average price, share of requirement procured, delivered volume; split by
-  direction, reason, provider or zone), a table of events, the bid stack for any half-hour of an event (each bid as wide as its MW
-  and as tall as its price, accepted or rejected), a provider / zone / DFS unit breakdown and a day x settlement-period grid. Click
-  a provider to filter the tab to it. Notes: volumes are MW for a half-hour, shown as MWh; accepted bids add up exactly to NESO's
+  November 2024), plus the *DFS Service Requirement* (guaranteed acceptance price and, from April 2026, a cap per zone per event
+  half-hour) and Elexon's market index price (`MID`, APX) for each event half-hour. **Clearing prices**: accepted bids are paid
+  their own price (pay-as-bid) and NESO takes bids in price order (in no half-hour is a rejected bid cheaper than the dearest
+  accepted one), so a half-hour's clearing price is its highest accepted bid; over several half-hours it is averaged weighted by
+  volume procured, and the cheapest rejected bid shows where NESO stopped. The tab shows KPIs (events, procured volume against the
+  requirement, accepted cost, turn-down clearing price against the market, share delivered, providers), clearing prices over time by
+  direction against the market price, bid volume by price band (accepted and rejected), each event's clearing price against the
+  market, the usual time chart (procured volume, accepted cost, average price, share of requirement procured, delivered volume; split
+  by direction, reason, provider or zone), a table of events with clearing and market prices, the bid stack for any half-hour of an
+  event (each bid as wide as its MW and as tall as its price, with the clearing and market prices and the zones closed), a map of
+  the 12 DFS zones (procured volume, cost, prices, acceptance or how often each zone was closed, over the range or for one event),
+  a provider / zone / DFS unit breakdown and a day x settlement-period grid. Click a provider or a zone to filter the tab to it.
+  Zone outlines: NESO's DFS 12-zone GeoJSON (February 2026, from the DFS page on neso.energy), simplified to 50 KB in
+  `static/vendor/dfs_zones.json`; NESO numbers the zones only, so the area names are approximate. Notes: volumes are MW for a half-hour, shown as MWh; accepted bids add up exactly to NESO's
   procured MW and cost for every half-hour (checked over all 3,130 event half-hours). The archive has no event numbers, types or
   tags (one Downwards event a day), so its events are named by date with the reason "Not stated"; zones (1-12) start in April
   2026. Provider names are upper-cased without "Limited", because NESO spells some differently between files. Test events are
   left out unless ticked. Fetched with the Total costs data (`bmdash costs`, the end of `bmdash ingest`, or the Refresh button):
-  about 35k rows, ten seconds; later refreshes re-read only the current year's files. Stored in `data/dfs_hh.parquet` and
-  `data/dfs_bid.parquet` (phone: the `dfs_hh` and `dfs_bid` tables; `harness ... dfs --db /tmp/bm.sqlite` fetches just these).
+  about 60k rows plus a market-price request per month with events, about 20 seconds; later refreshes re-read only the current year's files. Stored in `data/dfs_hh.parquet`,
+  `data/dfs_bid.parquet` and `data/dfs_cap.parquet` (phone: the `dfs_hh`, `dfs_bid` and `dfs_cap` tables; `harness ... dfs --db /tmp/bm.sqlite` fetches just these).
 - **Instruction replay**: on a unit's page, the Day detail card can replay NESO's instructions
   for the day in the order they were issued (plays and loops on its own by default; pause, step,
   slider, and a Loop toggle; reduced-motion users get the final state), showing the unit's plan

@@ -108,7 +108,7 @@ fun main(args: Array<String>) {
             println("remit: $n messages stored in ${(System.currentTimeMillis() - t) / 1000}s")
         }
         "dfs" -> {  // just the DFS events and bids (normally fetched as part of `costs`)
-            val (hh, bids) = bmdash.Dfs.ingest(db, bmdash.Elexon(2, base = bmdash.Elexon.NESO_BASE))
+            val (hh, bids) = bmdash.Dfs.ingest(db, bmdash.Elexon(2, base = bmdash.Elexon.NESO_BASE), bmdash.Elexon(2))
             println("dfs: $hh event half-hours, $bids bids")
         }
         "serve" -> {

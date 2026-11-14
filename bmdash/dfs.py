@@ -13,6 +13,16 @@ Two NESO files per year, in the ``demand-flexibility`` package (the current year
   accepted bids and, once settled, the volume delivered and its cost. Stored as ``data/dfs_hh.parquet``.
 - ``DFS Utilisation Report``: one row per bid (DFS unit x half-hour): provider, unit, zone, MW, price and whether NESO
   accepted it. Stored as ``data/dfs_bid.parquet``.
+- ``DFS Service Requirement``: per event half-hour, the guaranteed acceptance price (bids at or below it are accepted;
+  almost always 0) and, from April 2026, a cap per zone ("Z1:500,Z2:0,..."; 0 means the zone was closed to the event).
+  The price goes on ``dfs_hh``; the caps are stored as ``data/dfs_cap.parquet`` (event x half-hour x zone).
+
+Each event half-hour also carries the wholesale market index price for that half-hour (Elexon ``MID``, the APX
+price), fetched a month at a time, so the DFS clearing price can be compared with the market.
+
+Accepted bids are paid their own price (pay-as-bid) and NESO takes bids cheapest first: in every half-hour no rejected
+bid is cheaper than the dearest accepted one. The *clearing price* of a half-hour is therefore its highest accepted
+price; the cheapest rejected bid shows where NESO stopped.
 
 Volumes are MW held for a half-hour, so MWh = MW x 0.5; the cost of an accepted bid is MW x 0.5 x its price, which
 reproduces the summary's accepted cost. The archive for 2025/26 (which runs from November 2024) has no event ids,
@@ -41,7 +51,10 @@ HH_SCHEMA = pa.schema([
     ("settlement_date", pa.date32()), ("sp", pa.int16()), ("event", pa.string()), ("direction", pa.string()),
     ("tag", pa.string()), ("live", pa.bool_()), ("req_mw", pa.float64()), ("procured_mw", pa.float64()),
     ("cost", pa.float64()), ("settled_mw", pa.float64()), ("settled_cost", pa.float64()),
+    ("gap", pa.float64()), ("mip", pa.float64()),
 ])
+CAP_SCHEMA = pa.schema([("settlement_date", pa.date32()), ("sp", pa.int16()), ("event", pa.string()), ("zone", pa.int16()),
+                        ("cap_mw", pa.float64())])
 BID_SCHEMA = pa.schema([
     ("settlement_date", pa.date32()), ("sp", pa.int16()), ("event", pa.string()), ("direction", pa.string()),
     ("tag", pa.string()), ("live", pa.bool_()), ("party", pa.string()), ("unit", pa.string()), ("zone", pa.int16()),
@@ -49,6 +62,9 @@ BID_SCHEMA = pa.schema([
 ])
 HH_PATH = store.DATA / "dfs_hh.parquet"
 BID_PATH = store.DATA / "dfs_bid.parquet"
+CAP_PATH = store.DATA / "dfs_cap.parquet"
+REQ = re.compile(r"DFS Service Requirement( \(Archive (\d{4})/\d{4}\))?")
+ELEXON = "https://data.elexon.co.uk/bmrs/api/v1"
 
 
 def _num(v) -> float | None:
@@ -98,8 +114,39 @@ def summary_rows(records: list[dict]) -> list[tuple]:
         rows.append((d, sp, ev, direction, tag, (r.get("Service Requirement Type") or "Live") != "Test",
                      _num(r.get("Service Requirement MW")), _num(r.get("DFS Procured MW")) or 0.0,
                      _num(r.get("DFS Provider Bids Accepted Total Cost GBP")) or 0.0,
-                     _num(r.get("Settled Volume MW")), _num(r.get("Settled Cost GBP"))))
+                     _num(r.get("Settled Volume MW")), _num(r.get("Settled Cost GBP")), None, None))
     return rows
+
+
+def requirement_rows(records: list[dict]) -> tuple[dict, list[tuple]]:
+    """((event, sp) -> guaranteed acceptance price, cap rows) from the service requirement file."""
+    gap, caps = {}, []
+    for r in records:
+        w = _when(r)
+        if w is None:
+            continue
+        d, sp = w
+        ev = _event(r, d)[0]
+        gap[(ev, sp)] = _num(r.get("Guaranteed Acceptance Price GBP per MWh"))
+        for part in (r.get("Zonal Cap") or "").split(","):
+            m = re.fullmatch(r"\s*Z(\d+)\s*:\s*([\d.]+)\s*", part)
+            if m:
+                caps.append((d, sp, ev, int(m.group(1)), float(m.group(2))))
+    return gap, caps
+
+
+def fetch_mip(client: httpx.Client, days: set[date]) -> dict:
+    """(settlement date, period) -> market index price (APX) for the months containing ``days``, one request a month."""
+    from .costs import _get
+
+    out = {}
+    for y, m in sorted({(d.year, d.month) for d in days}):
+        a, b = date(y, m, 1), date(y + (m == 12), m % 12 + 1, 1)
+        data = _get(client, f"{ELEXON}/datasets/MID/stream", {"from": f"{a}T00:00Z", "to": f"{b}T00:00Z"})
+        for r in data["data"] if isinstance(data, dict) else data:
+            if r.get("dataProvider") == "APXMIDP" and r.get("volume") and r.get("settlementDate"):
+                out[(r["settlementDate"], int(r["settlementPeriod"]))] = float(r["price"])
+    return out
 
 
 def bid_rows(records: list[dict]) -> list[tuple]:
@@ -126,7 +173,7 @@ def resources(client: httpx.Client) -> list[tuple[str, str, bool]]:
     out = []
     for r in _resources(client, PACKAGE):
         name = r["name"].strip()
-        for kind, pat in (("hh", SUMMARY), ("bid", BIDS)):
+        for kind, pat in (("hh", SUMMARY), ("bid", BIDS), ("req", REQ)):
             m = pat.fullmatch(name)
             if m:
                 out.append((kind, r["id"], m.group(1) is not None))
@@ -137,25 +184,37 @@ def ingest_dfs(client: httpx.Client, log=print) -> None:
     from .costs import _sql
 
     full = not held()
-    got = {"hh": [], "bid": []}
+    got, gap, caps = {"hh": [], "bid": []}, {}, []
     for kind, rid, archive in resources(client):
         if archive and not full:
             continue
         recs = _sql(client, f'SELECT * FROM "{rid}"')
-        got[kind] += summary_rows(recs) if kind == "hh" else bid_rows(recs)
+        if kind == "req":
+            g, c = requirement_rows(recs)
+            gap.update(g)
+            caps += c
+        else:
+            got[kind] += summary_rows(recs) if kind == "hh" else bid_rows(recs)
     if not got["hh"]:
         raise RuntimeError(f"no DFS summary rows in {PACKAGE}")
+    mip = fetch_mip(client, {r[0] for r in got["hh"]})
+    got["hh"] = [r[:11] + (gap.get((r[2], r[1])), mip.get((r[0].isoformat(), r[1]))) for r in got["hh"]]
     # Replace from the first date fetched: everything when backfilling, else the current year's files.
     start = min(r[0] for r in got["hh"] + got["bid"])
     _merge(HH_PATH, HH_SCHEMA, got["hh"], start)
     _merge(BID_PATH, BID_SCHEMA, got["bid"], start)
-    log(f"  dfs: {len(got['hh'])} event half-hours, {len(got['bid'])} bids from {start}")
+    _merge(CAP_PATH, CAP_SCHEMA, [c for c in caps if c[0] >= start], start)
+    log(f"  dfs: {len(got['hh'])} event half-hours, {len(got['bid'])} bids, {len(caps)} zone caps from {start}")
 
 
 # ---------------------------------------------------------------- stores
 
 def held() -> bool:
-    return HH_PATH.exists() and pq.read_metadata(HH_PATH).num_rows > 0
+    """True once a backfill is stored in the current layout (files from before the price columns are re-fetched)."""
+    if not (HH_PATH.exists() and CAP_PATH.exists()):
+        return False
+    meta = pq.read_metadata(HH_PATH)
+    return meta.num_rows > 0 and "mip" in meta.schema.names
 
 
 def _merge(path, schema: pa.Schema, rows: list[tuple], start: date) -> None:
@@ -168,6 +227,6 @@ def _merge(path, schema: pa.Schema, rows: list[tuple], start: date) -> None:
 
 
 def ensure_layout() -> None:
-    for path, schema in ((HH_PATH, HH_SCHEMA), (BID_PATH, BID_SCHEMA)):
-        if not path.exists():
+    for path, schema in ((HH_PATH, HH_SCHEMA), (BID_PATH, BID_SCHEMA), (CAP_PATH, CAP_SCHEMA)):
+        if not path.exists() or (path == HH_PATH and "mip" not in pq.read_schema(path).names):
             store._atomic_write(schema.empty_table(), path)
