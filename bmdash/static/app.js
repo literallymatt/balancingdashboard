@@ -827,13 +827,15 @@ function replay(el, d) {
     <div class="replay-bar">
       <button type="button" class="btn" id="rpStart">Restart</button><button type="button" class="btn" id="rpBack">‹ Back</button>
       <button type="button" class="btn primary" id="rpPlay">Play</button><button type="button" class="btn" id="rpFwd">Next ›</button>
+      <label class="small muted"><input type="checkbox" id="rpLoop" checked> Loop</label>
       <label class="small muted">Speed <select id="rpSpeed">${[[1, 'Slow'], [3, 'Normal'], [6, 'Fast'], [12, 'Very fast']].map(([v, l]) => `<option value="${v}" ${v === fps ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
     </div>
     <input type="range" class="rp-slider" id="rpSlider" min="0" max="${N}" value="${N}" aria-label="Instruction number">
     <div class="replay-status" id="rpStatus"></div>
     <div class="chart" id="rpChart"></div>`;
 
-  let k = N, speed = fps;
+  let k = N, speed = fps, loop = true, hold = 0;
+  const HOLD_MS = 1500; // pause on the last instruction before looping back to the start
   const o = baseOption();
   o.legend = { ...o.legend, type: 'plain', show: true, itemGap: 12, textStyle: { color: css('--ink2'), fontSize: 11 }, data: ['Plan (PN)', 'Instructed so far', 'Before this one', 'This instruction'] };
   o.grid = { left: 42, right: 12, top: 56, bottom: 26, containLabel: false };
@@ -879,12 +881,17 @@ function replay(el, d) {
   const pause = () => { clearInterval(replayTimer); replayTimer = null; $('#rpPlay').textContent = 'Play'; };
   const play = () => {
     if (k >= N) k = 0;
+    hold = 0;
     draw();
     $('#rpPlay').textContent = 'Pause';
     clearInterval(replayTimer);
     replayTimer = setInterval(() => {
-      if (!el.isConnected) { clearInterval(replayTimer); return; }
-      if (k >= N) { pause(); return; }
+      if (!el.isConnected) { clearInterval(replayTimer); replayTimer = null; return; }
+      if (k >= N) {
+        if (!loop) { pause(); return; }
+        if (++hold * (1000 / speed) < HOLD_MS) return;
+        hold = 0; k = 0; draw(); return;
+      }
       k++; draw();
     }, 1000 / speed);
   };
@@ -894,7 +901,10 @@ function replay(el, d) {
   $('#rpFwd').onclick = () => { pause(); k = Math.min(N, k + 1); draw(); };
   $('#rpSlider').oninput = (e) => { pause(); k = +e.target.value; draw(); };
   $('#rpSpeed').onchange = (e) => { speed = +e.target.value; if (replayTimer) play(); };
-  draw();
+  $('#rpLoop').onchange = (e) => { loop = e.target.checked; };
+  // Play and loop by default; people who ask for reduced motion get the static final state with Play available.
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) draw();
+  else { k = 0; play(); }
 }
 
 
