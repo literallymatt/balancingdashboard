@@ -49,12 +49,14 @@ object Store {
             PRIMARY KEY (settlement_date, ic, sp)) WITHOUT ROWID""",
         // DFS tab (see Dfs.kt): one row per event half-hour, and one per provider bid (DFS unit x half-hour).
         """CREATE TABLE IF NOT EXISTS dfs_hh (settlement_date TEXT NOT NULL, sp INTEGER, event TEXT, direction TEXT, tag TEXT, live INTEGER,
-            req_mw REAL, procured_mw REAL, cost REAL, settled_mw REAL, settled_cost REAL)""",
+            req_mw REAL, procured_mw REAL, cost REAL, settled_mw REAL, settled_cost REAL, gap REAL, mip REAL)""",
         "CREATE INDEX IF NOT EXISTS dfs_hh_date ON dfs_hh(settlement_date)",
         """CREATE TABLE IF NOT EXISTS dfs_bid (settlement_date TEXT NOT NULL, sp INTEGER, event TEXT, direction TEXT, tag TEXT, live INTEGER,
             party TEXT, unit TEXT, zone INTEGER, mw REAL, price REAL, accepted INTEGER)""",
         "CREATE INDEX IF NOT EXISTS dfs_bid_date ON dfs_bid(settlement_date)",
         "CREATE INDEX IF NOT EXISTS dfs_bid_event ON dfs_bid(event)",
+        "CREATE TABLE IF NOT EXISTS dfs_cap (settlement_date TEXT NOT NULL, sp INTEGER, event TEXT, zone INTEGER, cap_mw REAL)",
+        "CREATE INDEX IF NOT EXISTS dfs_cap_event ON dfs_cap(event, sp)",
     )
 
     fun init(db: SqlDb) {
@@ -63,6 +65,10 @@ object Store {
         val cols = db.query("PRAGMA table_info(ic_trade)").map { it["name"] }
         if (cols.isNotEmpty() && "price_max" !in cols) db.exec("DROP TABLE ic_trade")
         for (s in DDL) db.exec(s)
+        if (Dfs.needsMigration(db)) {  // DFS tables from before the price columns: drop, and the next refresh re-fetches them
+            for (t in listOf("dfs_hh", "dfs_bid", "dfs_cap")) db.exec("DROP TABLE IF EXISTS $t")
+            for (s in DDL) db.exec(s)
+        }
     }
 
     private val TABLES = mapOf(

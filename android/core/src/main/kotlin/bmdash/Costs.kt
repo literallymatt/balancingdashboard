@@ -99,7 +99,7 @@ class CostIngester(private val db: SqlDb) {
             }
             // Demand Flexibility Service (DFS tab): small files, the current year re-read whole.
             try {
-                Dfs.ingest(db, neso)
+                Dfs.ingest(db, neso, elexon)
             } catch (e: Exception) {
                 errors.add("dfs: ${e.message}")
             }
