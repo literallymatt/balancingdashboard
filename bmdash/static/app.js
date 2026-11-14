@@ -38,6 +38,13 @@ function readHash() {
 }
 
 function writeHash(replace = false) {
+  const h = stateHash();
+  if (replace) history.replaceState(null, '', h); else location.hash = h;
+  if (replace) render();
+}
+
+/** The URL hash for the current state. */
+function stateHash() {
   const p = new URLSearchParams();
   for (const k of ['from', 'to', 'bucket', 'metric', 'split', 'bdim']) if (state[k]) p.set(k, state[k]);
   if (state.view === 'unit' && state.day) p.set('day', state.day);
@@ -47,12 +54,78 @@ function writeHash(replace = false) {
   if (state.view === 'dfs') for (const k of ['dmetric', 'dsplit', 'dbd', 'dp', 'dev', 'ddir', 'dtag', 'dtest', 'dz', 'dzm', 'dzev', 'dbin']) if (state[k]) p.set(k, state[k]);
   for (const [k, v] of Object.entries(state.filters)) if (v.length) p.set('f.' + k, v.join('|'));
   const path = state.view === 'unit' ? `unit/${encodeURIComponent(state.unit)}` : state.view;
-  const h = `#/${path}?${p}`;
-  if (replace) history.replaceState(null, '', h); else location.hash = h;
-  if (replace) render();
+  return `#/${path}?${p}`;
 }
 
 function update(patch, replace = false) { Object.assign(state, patch); writeHash(replace); }
+
+// ------------------------------------------------------------------ zoom trail
+// Clicking a chart zooms into a period. Each zoom remembers where it came from, so the filter bar can show
+// a "Back" button and a breadcrumb trail (e.g. "Last 30 days › w/c 7 Oct › Wed 9 Oct") to step back out.
+// Kept in sessionStorage so a reload keeps the trail; the browser's Back button also still works.
+
+let zoomTrail = (() => { try { return JSON.parse(sessionStorage.getItem('zoomTrail')) || []; } catch { return []; } })();
+const saveTrail = () => { try { sessionStorage.setItem('zoomTrail', JSON.stringify(zoomTrail)); } catch { /* storage off */ } };
+const fmtDay = (d) => { const x = parseDay(d); return `${DOW[x.getUTCDay()]} ${x.getUTCDate()} ${MON[x.getUTCMonth()]} ${x.getUTCFullYear()}`; };
+
+/** Short words for the range a view shows: "Wed 9 Oct 2026", or "1 Oct – 30 Oct 2026". */
+function rangeLabel(r) {
+  if (!r.from || !r.to) return 'previous view';
+  let s;
+  if (r.from === r.to) s = fmtDay(r.from);
+  else {
+    const a = parseDay(r.from), b = parseDay(r.to);
+    const sameYear = a.getUTCFullYear() === b.getUTCFullYear();
+    s = `${a.getUTCDate()} ${MON[a.getUTCMonth()]}${sameYear ? '' : ` ${a.getUTCFullYear()}`} – ${b.getUTCDate()} ${MON[b.getUTCMonth()]} ${b.getUTCFullYear()}`;
+  }
+  return r.day && !(r.from === r.to && r.from === r.day) ? `${s} · detail for ${fmtDay(r.day)}` : s;
+}
+
+/** The part of the state a zoom changes: which page, and the time range it shows. */
+const zoomKey = () => ({ view: state.view, unit: state.unit, from: state.from, to: state.to, bucket: state.bucket, day: state.view === 'unit' ? state.day : null });
+const sameRange = (a, b) => a.view === b.view && a.unit === b.unit && a.from === b.from && a.to === b.to && (a.day || null) === (b.day || null);
+
+/** Where the current view sits in the zoom trail: the index of the zoom that led here, or -1. */
+const trailPos = () => { const k = zoomKey(); for (let i = zoomTrail.length - 1; i >= 0; i--) if (sameRange(zoomTrail[i].to, k)) return i; return -1; };
+
+/** Zoom into a period from a chart click, remembering the current range so it can be stepped back to. */
+function zoomTo(patch) {
+  const i = trailPos();
+  zoomTrail = zoomTrail.slice(0, i + 1);  // zooming from somewhere not on the trail starts a fresh one
+  const from = zoomKey();
+  Object.assign(state, patch);
+  const to = zoomKey();
+  if (sameRange(from, to)) return;
+  zoomTrail.push({ from, to });
+  saveTrail();
+  writeHash();  // a real history entry, so the browser's Back button steps out too
+}
+
+/** Step back out `steps` zooms, keeping any other settings (metric, split, filters) changed since. */
+function zoomOut(steps = 1) {
+  const i = trailPos();
+  if (i < 0) return;
+  const r = zoomTrail[Math.max(0, i - steps + 1)].from;
+  update({ from: r.from, to: r.to, bucket: r.bucket || 'auto', ...(state.view === 'unit' ? { day: r.day } : {}) });
+}
+
+function drawZoomTrail() {
+  const el = $('#zoomTrail');
+  const i = trailPos();
+  if (i < 0) { el.hidden = true; el.innerHTML = ''; return; }
+  const crumbs = zoomTrail.slice(0, i + 1), back = rangeLabel(crumbs[i].from);
+  el.hidden = false;
+  el.innerHTML = `<button type="button" class="btn zoom-back" title="Zoom back out to ${esc(back)} (Esc)">← Back to ${esc(back)}</button>
+    <nav class="crumbs small" aria-label="Zoom trail">${crumbs.map((z, j) => `<a href="#" data-steps="${i - j + 1}" title="Zoom back out to ${esc(rangeLabel(z.from))}">${esc(rangeLabel(z.from))}</a><span class="sep" aria-hidden="true">›</span>`).join('')}<b aria-current="page">${esc(rangeLabel(crumbs[i].to))}</b></nav>
+    <span class="muted small hint">or press Esc</span>`;
+  el.querySelector('.zoom-back').onclick = () => zoomOut(1);
+  el.querySelectorAll('.crumbs a').forEach((a) => a.onclick = (e) => { e.preventDefault(); zoomOut(+a.dataset.steps); });
+}
+
+addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || e.defaultPrevented || e.target.closest?.('input, select, textarea')) return;
+  if (!$('#tipbox') || $('#tipbox').hidden) { if (trailPos() >= 0) zoomOut(1); }
+});
 
 function queryParams(extra = {}) {
   const p = { from: state.from, to: state.to };
@@ -296,13 +369,13 @@ async function timeChart(el, tableEl) {
 function drillTime(t, bucket) {
   const d = t.slice(0, 10);
   if (bucket === 'sp' || bucket === 'hour') {
-    if (state.view === 'unit') update({ day: d }, true);
-    else if (state.from !== d || state.to !== d) update({ from: d, to: d, bucket: 'auto' });
+    if (state.view === 'unit') zoomTo({ day: d });
+    else if (state.from !== d || state.to !== d) zoomTo({ from: d, to: d, bucket: 'auto' });
     return;
   }
   const end = bucket === 'day' ? d : bucket === 'week' ? addDays(d, 6)
     : iso(new Date(Date.UTC(+d.slice(0, 4), +d.slice(5, 7), 0)));
-  update({ from: d, to: end > META.max ? META.max : end, bucket: 'auto', day: state.view === 'unit' && bucket === 'day' ? d : state.day });
+  zoomTo({ from: d, to: end > META.max ? META.max : end, bucket: 'auto', day: state.view === 'unit' && bucket === 'day' ? d : state.day });
 }
 
 /** Horizontal ranked bars for one dimension; click a bar to filter by it. */
@@ -391,8 +464,8 @@ async function heatmapChart(el) {
   el.style.cursor = 'pointer';
   c.on('click', (p) => {
     const d = days[p.value[0]];
-    if (state.view === 'unit') update({ day: d }, true);
-    else update({ from: d, to: d, bucket: 'auto' });
+    if (state.view === 'unit') zoomTo({ day: d });
+    else zoomTo({ from: d, to: d, bucket: 'auto' });
   });
 }
 
@@ -1355,9 +1428,9 @@ function conHeat(el, rows, bucket, m) {
 /** Zoom the Constraints tab into one time bucket (like drillTime, but within this tab's own data range). */
 function conDrill(t, bucket) {
   const d = String(t).slice(0, 10);
-  if (bucket === 'sp' || bucket === 'hour') return update({ from: d, to: d, bucket: 'auto' });
+  if (bucket === 'sp' || bucket === 'hour') return zoomTo({ from: d, to: d, bucket: 'auto' });
   const end = bucket === 'day' ? d : bucket === 'week' ? addDays(d, 6) : iso(new Date(Date.UTC(+d.slice(0, 4), +d.slice(5, 7), 0)));
-  update({ from: d < CMETA.min ? CMETA.min : d, to: end > CMETA.max ? CMETA.max : end, bucket: 'auto' });
+  zoomTo({ from: d < CMETA.min ? CMETA.min : d, to: end > CMETA.max ? CMETA.max : end, bucket: 'auto' });
 }
 
 /** Forecast flow against the limit for one boundary, plus how often it was at the limit. One axis per chart. */
@@ -2117,7 +2190,7 @@ function icClickable(el, o, cats, onPick) {
 function icDrill(t, bucket) {
   const d = String(t).slice(0, 10);
   const end = bucket === 'sp' || bucket === 'hour' || bucket === 'day' ? d : bucket === 'week' ? addDays(d, 6) : iso(new Date(Date.UTC(+d.slice(0, 4), +d.slice(5, 7), 0)));
-  update({ from: d < IMETA.min ? IMETA.min : d, to: end > IMETA.max ? IMETA.max : end, bucket: 'auto', it: null });
+  zoomTo({ from: d < IMETA.min ? IMETA.min : d, to: end > IMETA.max ? IMETA.max : end, bucket: 'auto', it: null });
 }
 
 const PRICE_LINES = [
@@ -2896,7 +2969,7 @@ function dDrillHint(t, bucket) {
 function dDrill(t, bucket) {
   const d = String(t).slice(0, 10);
   const end = bucket === 'sp' || bucket === 'hour' || bucket === 'day' ? d : bucket === 'week' ? addDays(d, 6) : iso(new Date(Date.UTC(+d.slice(0, 4), +d.slice(5, 7), 0)));
-  update({ from: d < DMETA.min ? DMETA.min : d, to: end > DMETA.max ? DMETA.max : end, bucket: 'auto', dev: null });
+  zoomTo({ from: d < DMETA.min ? DMETA.min : d, to: end > DMETA.max ? DMETA.max : end, bucket: 'auto', dev: null });
 }
 
 /** Ranked bars per provider, zone or unit: accepted and rejected volume (or cost, or price). Click a provider to filter. */
@@ -3196,6 +3269,7 @@ async function render() {
   const noFilters = state.view === 'data' || state.view === 'costs' || (state.view === 'constraints' && !CMETA.max) || (state.view === 'remit' && !RMETA.max) || (state.view === 'interconnectors' && !IMETA.max) || (state.view === 'dfs' && !DMETA.max);
   $('#filterbar').hidden = noFilters;
   if (!noFilters) drawFilterBar();
+  drawZoomTrail();
   const main = $('#main');
   try {
     if (state.view === 'units') await viewUnits(main);
