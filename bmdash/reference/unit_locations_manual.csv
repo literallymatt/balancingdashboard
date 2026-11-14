@@ -1,0 +1,71 @@
+bm_unit_prefix,lat,lon,note
+T_MOWWO,57.52,-2.93,Moray West offshore wind: onshore connection at Blackhillock
+T_MOWEO,57.50,-2.20,Moray East offshore wind: New Deer
+T_SGRWO,56.53,-2.98,Seagreen offshore wind: Tealing (offshore site is the other side of SSEN South)
+T_INCWO,55.97,-2.97,Inch Cape offshore wind: Cockenzie (SPT)
+T_NNGAO,55.93,-2.45,Neart na Gaoithe offshore wind: East Lothian (SPT)
+T_VKNGW,60.30,-1.30,Viking wind farm: Shetland
+T_LIMKW,58.53,-3.75,Limekiln wind farm: Caithness
+E_CMSTW,58.40,-3.25,Camster wind farm: Caithness
+T_GLNKW,57.30,-4.05,Glen Kyllachy wind farm: Highland
+V__PHABI,57.25,-3.75,Boat of Garten: Highland
+T_BLHLB,57.52,-2.93,Blackhillock battery
+T_CUMHW,55.60,-3.95,Cumberhead wind farm: South Lanarkshire
+T_COALB,55.58,-3.90,Coalburn battery: South Lanarkshire
+T_KLGLW,55.03,-4.75,Kilgallioch wind farm: Dumfries and Galloway
+T_NOKYW,55.35,-4.40,North Kyle wind farm: East Ayrshire
+T_ENHLW,55.33,-4.10,Enoch Hill wind farm: East Ayrshire
+T_BENBW,55.25,-4.10,Benbrack wind farm: Dumfries and Galloway
+T_KYPEW,55.60,-4.05,Kype Muir wind farm: South Lanarkshire
+T_DWEXW,55.55,-3.85,Douglas West wind farm: South Lanarkshire
+T_HAGHW,55.56,-3.90,Hagshaw Hill wind farm: South Lanarkshire
+T_PRSTW,55.42,-3.75,Priestgill wind farm: South Lanarkshire
+T_CRYRW,55.88,-2.52,Crystal Rig wind farm: Lammermuirs
+T_BROCW,55.60,-3.70,Broken Cross wind farm: South Lanarkshire
+T_PLOEW,55.30,-4.25,Pencloe wind farm: East Ayrshire
+T_WHLWB,55.68,-4.30,Whitelee battery
+T_WISHB,55.77,-3.92,Wishaw battery
+T_NLSTB,55.78,-4.43,Neilston battery
+T_COYLB,55.45,-4.50,Coylton battery
+T_KILSB,55.58,-4.50,Kilmarnock South battery
+T_KEAD,53.60,-0.75,Keadby
+T_SOFOW,54.57,-1.10,Sofia offshore wind: Lackenby
+T_HOWAO,53.65,-0.25,Hornsea 1: Killingholme
+T_HOWBO,53.65,-0.25,Hornsea 2: Killingholme
+T_HOWCO,52.60,1.30,Hornsea 3: Norwich Main
+T_DBAWO,53.80,-0.45,Dogger Bank A: Creyke Beck
+T_DBBWO,53.80,-0.45,Dogger Bank B: Creyke Beck
+T_EAAO,52.08,1.06,East Anglia One: Bramford
+T_EACWO,52.08,1.06,East Anglia Three: Bramford
+T_TSREP,54.58,-1.10,Teesside renewable energy plant
+T_WILCT,54.58,-1.10,Wilton
+T_LIONB,54.58,-1.10,Wilton battery
+T_SEEL,52.80,-0.15,Spalding
+T_HIRWN,51.75,-3.50,Hirwaun
+T_HUMR,53.65,-0.25,Humber
+T_MLBRK,52.08,-0.50,Millbrook
+T_CLVHS,51.33,0.95,Cleve Hill solar
+T_THUPG,51.48,0.33,Thurrock
+T_THURB,51.48,0.33,Thurrock battery
+T_IRNAB,51.55,-2.48,Iron Acton battery
+T_LKSDB,53.74,-0.99,Lakeside battery: Drax
+T_HAMHB,52.52,-1.70,Hams Hall battery
+T_MNFRB,53.76,-1.23,Monk Fryston battery
+T_MKFRB,53.76,-1.23,Monk Fryston battery
+T_FERRB,53.71,-1.28,Ferrybridge battery
+T_CASKD,53.33,-2.73,Castner Kellner: Runcorn
+T_USKMB,51.55,-2.97,Uskmouth battery
+T_RICHB,51.30,1.35,Richborough battery
+T_KEMB,51.36,0.74,Kemsley battery
+T_DEPKG,53.22,-3.05,Deeside
+T_CAPNB,53.26,-2.95,Capenhurst battery
+T_ENDRB,52.60,-1.22,Enderby battery
+T_BFENB,52.92,-0.20,Bicker Fen battery
+T_BFENS,52.92,-0.20,Bicker Fen solar
+T_INDQB,50.40,-4.93,Indian Queens battery
+T_NURSB,50.95,-1.47,Nursling battery
+T_SUNDB,51.93,-0.47,Sundon battery
+T_COVNB,52.40,-1.50,Coventry battery
+T_BUSTB,52.53,-2.02,Bustleholme battery
+T_OCHLB,52.53,-2.05,Ocker Hill battery
+T_BREDB,53.42,-2.12,Bredbury battery
