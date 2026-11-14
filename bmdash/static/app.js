@@ -59,64 +59,133 @@ function stateHash() {
 
 function update(patch, replace = false) { Object.assign(state, patch); writeHash(replace); }
 
-// ------------------------------------------------------------------ zoom trail
-// Clicking a chart zooms into a period. Each zoom remembers where it came from, so the filter bar can show
-// a "Back" button and a breadcrumb trail (e.g. "Last 30 days › w/c 7 Oct › Wed 9 Oct") to step back out.
+// ------------------------------------------------------------------ click-through trail
+// Clicking a chart, map or table row drills in: to a shorter period, one interconnector, one boundary, one DFS
+// event, one unit... Each click-through remembers where it came from, so the filter bar can show a "Back" button
+// and a breadcrumb trail (e.g. "5 Nov – 14 Nov 2026 › Mon 9 Nov › IFA") to step back out. Esc also steps back.
 // Kept in sessionStorage so a reload keeps the trail; the browser's Back button also still works.
 
+let trailAt = -1;  // the trail position the bar was last drawn for (pages may fill in defaults after that)
 let zoomTrail = (() => { try { return JSON.parse(sessionStorage.getItem('zoomTrail')) || []; } catch { return []; } })();
 const saveTrail = () => { try { sessionStorage.setItem('zoomTrail', JSON.stringify(zoomTrail)); } catch { /* storage off */ } };
 const fmtDay = (d) => { const x = parseDay(d); return `${DOW[x.getUTCDay()]} ${x.getUTCDate()} ${MON[x.getUTCMonth()]} ${x.getUTCFullYear()}`; };
 
-/** Short words for the range a view shows: "Wed 9 Oct 2026", or "1 Oct – 30 Oct 2026". */
+/** Short words for a range: "Wed 9 Oct 2026", or "1 Oct – 30 Oct 2026". */
 function rangeLabel(r) {
   if (!r.from || !r.to) return 'previous view';
-  let s;
-  if (r.from === r.to) s = fmtDay(r.from);
-  else {
-    const a = parseDay(r.from), b = parseDay(r.to);
-    const sameYear = a.getUTCFullYear() === b.getUTCFullYear();
-    s = `${a.getUTCDate()} ${MON[a.getUTCMonth()]}${sameYear ? '' : ` ${a.getUTCFullYear()}`} – ${b.getUTCDate()} ${MON[b.getUTCMonth()]} ${b.getUTCFullYear()}`;
-  }
-  return r.day && !(r.from === r.to && r.from === r.day) ? `${s} · detail for ${fmtDay(r.day)}` : s;
+  if (r.from === r.to) return fmtDay(r.from);
+  const a = parseDay(r.from), b = parseDay(r.to);
+  const sameYear = a.getUTCFullYear() === b.getUTCFullYear();
+  return `${a.getUTCDate()} ${MON[a.getUTCMonth()]}${sameYear ? '' : ` ${a.getUTCFullYear()}`} – ${b.getUTCDate()} ${MON[b.getUTCMonth()]} ${b.getUTCFullYear()}`;
 }
 
-/** The part of the state a zoom changes: which page, and the time range it shows. */
-const zoomKey = () => ({ view: state.view, unit: state.unit, from: state.from, to: state.to, bucket: state.bucket, day: state.view === 'unit' ? state.day : null });
-const sameRange = (a, b) => a.view === b.view && a.unit === b.unit && a.from === b.from && a.to === b.to && (a.day || null) === (b.day || null);
+/** A moment picked on a chart ("2026-11-09T14:30:00" or "2026-11-09") in words. */
+function momentLabel(t) {
+  const s = String(t);
+  if (s.length <= 10 || s.slice(11, 16) === '00:00') return fmtDay(s);
+  const d = new Date(s.slice(0, 19) + 'Z');
+  return `${DOW[d.getUTCDay()]} ${d.getUTCDate()} ${MON[d.getUTCMonth()]} ${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`;
+}
 
-/** Where the current view sits in the zoom trail: the index of the zoom that led here, or -1. */
-const trailPos = () => { const k = zoomKey(); for (let i = zoomTrail.length - 1; i >= 0; i--) if (sameRange(zoomTrail[i].to, k)) return i; return -1; };
+// The selections each page lets you click into, and how to name them (set, and cleared).
+const DRILL_FIELDS = {
+  unit: { day: [(v) => `detail for ${fmtDay(v)}`, 'no day detail'] },
+  constraints: { bnd: [(v) => bname(v), 'all boundaries'] },
+  remit: { rgsp: [(v) => gspName(v), 'all regions'] },
+  interconnectors: { ic: [(v) => icName(v), 'all interconnectors'], icp: [(v) => v, 'all counterparties'], it: [(v) => `${momentLabel(v)} selected`, 'whole range'] },
+  dfs: { dev: [(v) => `event ${v}`, 'latest event'], dp: [(v) => v, 'all providers'], dz: [(v) => `zone ${v}`, 'all zones'] },
+};
+const VIEW_NAME = { overview: 'Overview', units: 'Units', constraints: 'Constraints', remit: 'REMIT', interconnectors: 'Interconnectors', dfs: 'DFS' };
 
-/** Zoom into a period from a chart click, remembering the current range so it can be stepped back to. */
-function zoomTo(patch) {
-  const i = trailPos();
-  zoomTrail = zoomTrail.slice(0, i + 1);  // zooming from somewhere not on the trail starts a fresh one
-  const from = zoomKey();
+/** What a click-through can change: the page, its range, filters and the selections that page has. */
+function drillKey() {
+  const k = { view: state.view, unit: state.unit || null, from: state.from, to: state.to, filters: JSON.stringify(state.filters || {}),
+    bucket: state.bucket, split: state.split, bdim: state.bdim };  // last three are restored on the way back, not compared
+  for (const f of Object.keys(DRILL_FIELDS[state.view] || {})) k[f] = state[f] ?? null;
+  return k;
+}
+const COMPARED = (k) => ['view', 'unit', 'from', 'to', 'filters', ...Object.keys(DRILL_FIELDS[k.view] || {})];
+const sameKey = (a, b) => COMPARED(a).every((f) => String(a[f] ?? '') === String(b[f] ?? '')) && COMPARED(b).every((f) => String(a[f] ?? '') === String(b[f] ?? ''));
+
+/** The whole of a view in words: "Interconnectors · 5 Nov – 14 Nov 2026 · IFA". */
+function describe(k) {
+  const bits = [k.view === 'unit' ? k.unit : rangeLabel(k)];
+  if (k.view === 'unit') bits.push(rangeLabel(k));
+  for (const [dim, vals] of Object.entries(JSON.parse(k.filters || '{}'))) if (vals.length) bits.push(vals.join(', '));
+  for (const [f, [named]] of Object.entries(DRILL_FIELDS[k.view] || {})) if (k[f] != null && !(f === 'dev')) bits.push(named(k[f]));
+  if (k.view === 'dfs' && k.dev != null) bits.push(DRILL_FIELDS.dfs.dev[0](k.dev));
+  return bits.join(' · ');
+}
+
+/** What one click-through changed, in a few words: "Mon 9 Nov 2026", "IFA", "Lead party: X". */
+function stepLabel(a, b) {
+  if (a.view !== b.view || a.unit !== b.unit) return b.view === 'unit' ? `Unit ${b.unit}` : VIEW_NAME[b.view] || b.view;
+  const bits = [];
+  if (a.from !== b.from || a.to !== b.to) bits.push(rangeLabel(b));
+  const fa = JSON.parse(a.filters || '{}'), fb = JSON.parse(b.filters || '{}');
+  for (const dim of new Set([...Object.keys(fa), ...Object.keys(fb)])) {
+    if (JSON.stringify(fa[dim] || []) === JSON.stringify(fb[dim] || [])) continue;
+    bits.push(fb[dim]?.length ? `${DIM_LABEL[dim] || dim}: ${fb[dim].join(', ')}` : `any ${(DIM_LABEL[dim] || dim).toLowerCase()}`);
+  }
+  for (const [f, [named, none]] of Object.entries(DRILL_FIELDS[b.view] || {})) {
+    if (String(a[f] ?? '') === String(b[f] ?? '')) continue;
+    if (f === 'dev' && b[f] == null && bits.length) continue;  // a new range or provider resets the event; not worth saying
+    bits.push(b[f] != null ? named(b[f]) : none);
+  }
+  return bits.join(' · ') || describe(b);
+}
+
+/** Where the current view sits in the trail: the index of the click-through that led here, or -1. */
+const trailPos = () => { const k = drillKey(); for (let i = zoomTrail.length - 1; i >= 0; i--) if (sameKey(zoomTrail[i].to, k)) return i; return -1; };
+/** As trailPos, but trusting the drawn bar when a page has since filled in a default (e.g. the unit page's day). */
+const here = () => { const i = trailPos(); return i >= 0 ? i : trailAt; };
+
+/**
+ * Drill in from a click: apply `patch`, remembering the current view so it can be stepped back to.
+ * Pass render: false when the page redraws itself (it only gets a new history entry and the trail).
+ */
+function drill(patch, { render = true } = {}) {
+  const i = here();
+  zoomTrail = zoomTrail.slice(0, i + 1);  // drilling from somewhere not on the trail starts a fresh one
+  const from = drillKey();
   Object.assign(state, patch);
-  const to = zoomKey();
-  if (sameRange(from, to)) return;
+  const to = drillKey();
+  if (sameKey(from, to)) { if (render) writeHash(true); return; }
   zoomTrail.push({ from, to });
   saveTrail();
-  writeHash();  // a real history entry, so the browser's Back button steps out too
+  if (render) writeHash();  // a real history entry, so the browser's Back button steps out too
+  else { history.pushState(null, '', stateHash()); drawZoomTrail(); }
+}
+const zoomTo = (patch) => drill(patch);
+
+/** For in-page changes that are not click-throughs (replay, slider): keep the trail pointing at where we are. */
+function followTrail(fn) {
+  const i = here();
+  fn();
+  if (i >= 0) { zoomTrail[i].to = drillKey(); saveTrail(); }
 }
 
-/** Step back out `steps` zooms, keeping any other settings (metric, split, filters) changed since. */
+/** Step back out `steps` click-throughs, keeping display settings (measure, split...) changed since. */
 function zoomOut(steps = 1) {
-  const i = trailPos();
+  const i = trailAt;
   if (i < 0) return;
   const r = zoomTrail[Math.max(0, i - steps + 1)].from;
-  update({ from: r.from, to: r.to, bucket: r.bucket || 'auto', ...(state.view === 'unit' ? { day: r.day } : {}) });
+  const patch = { view: r.view, unit: r.unit, from: r.from, to: r.to, bucket: r.bucket || 'auto', filters: JSON.parse(r.filters || '{}') };
+  if (r.view !== state.view) Object.assign(patch, { split: r.split, bdim: r.bdim });
+  for (const f of Object.keys(DRILL_FIELDS[r.view] || {})) patch[f] = r[f];
+  update(patch);
 }
 
 function drawZoomTrail() {
   const el = $('#zoomTrail');
-  const i = trailPos();
+  if (!el) return;
+  const i = trailAt = trailPos();
   if (i < 0) { el.hidden = true; el.innerHTML = ''; return; }
-  const crumbs = zoomTrail.slice(0, i + 1), back = rangeLabel(crumbs[i].from);
+  const crumbs = zoomTrail.slice(0, i + 1), back = describe(crumbs[i].from);
+  const label = (j) => (j === 0 ? describe(crumbs[0].from) : stepLabel(crumbs[j - 1].from, crumbs[j - 1].to));
   el.hidden = false;
-  el.innerHTML = `<button type="button" class="btn zoom-back" title="Zoom back out to ${esc(back)} (Esc)">← Back to ${esc(back)}</button>
-    <nav class="crumbs small" aria-label="Zoom trail">${crumbs.map((z, j) => `<a href="#" data-steps="${i - j + 1}" title="Zoom back out to ${esc(rangeLabel(z.from))}">${esc(rangeLabel(z.from))}</a><span class="sep" aria-hidden="true">›</span>`).join('')}<b aria-current="page">${esc(rangeLabel(crumbs[i].to))}</b></nav>
+  el.innerHTML = `<button type="button" class="btn zoom-back" title="Go back to ${esc(back)} (Esc)">← Back to ${esc(back)}</button>
+    <nav class="crumbs small" aria-label="Where you have clicked through">${crumbs.map((z, j) => `<a href="#" data-steps="${i - j + 1}" title="Go back to ${esc(describe(z.from))}">${esc(label(j))}</a><span class="sep" aria-hidden="true">›</span>`).join('')}<b aria-current="page">${esc(stepLabel(crumbs[i].from, crumbs[i].to))}</b></nav>
     <span class="muted small hint">or press Esc</span>`;
   el.querySelector('.zoom-back').onclick = () => zoomOut(1);
   el.querySelectorAll('.crumbs a').forEach((a) => a.onclick = (e) => { e.preventDefault(); zoomOut(+a.dataset.steps); });
@@ -124,7 +193,7 @@ function drawZoomTrail() {
 
 addEventListener('keydown', (e) => {
   if (e.key !== 'Escape' || e.defaultPrevented || e.target.closest?.('input, select, textarea')) return;
-  if (!$('#tipbox') || $('#tipbox').hidden) { if (trailPos() >= 0) zoomOut(1); }
+  if ((!$('#tipbox') || $('#tipbox').hidden) && trailAt >= 0 && !$('#zoomTrail').hidden) zoomOut(1);
 });
 
 function queryParams(extra = {}) {
@@ -423,7 +492,7 @@ async function breakdownChart(el) {
     const r = rows[p?.[1]];
     if (!r) return;
     if (dim === 'unit') return openUnit(r.g);
-    update({ filters: { ...state.filters, [dim]: [r.g] } });
+    drill({ filters: { ...state.filters, [dim]: [r.g] } });
   });
 }
 
@@ -547,7 +616,7 @@ function table(el, cols, rows, { onRow, rowTip, limit = 300, sort } = {}) {
 }
 
 const techTag = (r) => `<span class="tag"><span class="dot" style="background:${colour('tech', r.tech)}"></span>${esc(r.tech)}</span>`;
-function openUnit(id) { state.view = 'unit'; state.unit = id; state.split = 'direction'; state.bdim = 'pair'; state.day = null; delete state.filters.unit; writeHash(); }
+function openUnit(id) { const filters = { ...state.filters }; delete filters.unit; drill({ view: 'unit', unit: id, split: 'direction', bdim: 'pair', day: null, filters }); }
 
 // ------------------------------------------------------------------ views
 
@@ -1289,7 +1358,7 @@ async function viewConstraints(main) {
     kpi('Most often at its limit', top ? bname(top.g) : '–', top ? `${pct(ratio(top.n_bind, top.n))} of the time · ${nf(0).format(top.n_bind / 2)} hours` : '', 'boundary'),
   ].join('');
 
-  const pick = (g) => update({ bnd: g }, true);
+  const pick = (g) => drill({ bnd: g });
   loading($('#conMap'), () => conMap($('#conMap'), totals, m, pick));
   conTable($('#conTable'), totals, thermal, pick);
   loading($('#conHeat'), async () => conHeat($('#conHeat'), agg.rows, bucket, m));
@@ -1420,17 +1489,16 @@ function conHeat(el, rows, bucket, m) {
   el.style.cursor = bucket === 'tod' ? 'default' : 'pointer';
   c.on('click', (p) => {
     if (bucket === 'tod') return;
-    state.bnd = p.data.r.g;
-    conDrill(p.data.r.t, bucket);
+    conDrill(p.data.r.t, bucket, { bnd: p.data.r.g });
   });
 }
 
 /** Zoom the Constraints tab into one time bucket (like drillTime, but within this tab's own data range). */
-function conDrill(t, bucket) {
+function conDrill(t, bucket, extra = {}) {
   const d = String(t).slice(0, 10);
-  if (bucket === 'sp' || bucket === 'hour') return zoomTo({ from: d, to: d, bucket: 'auto' });
+  if (bucket === 'sp' || bucket === 'hour') return drill({ from: d, to: d, bucket: 'auto', ...extra });
   const end = bucket === 'day' ? d : bucket === 'week' ? addDays(d, 6) : iso(new Date(Date.UTC(+d.slice(0, 4), +d.slice(5, 7), 0)));
-  zoomTo({ from: d < CMETA.min ? CMETA.min : d, to: end > CMETA.max ? CMETA.max : end, bucket: 'auto' });
+  drill({ from: d < CMETA.min ? CMETA.min : d, to: end > CMETA.max ? CMETA.max : end, bucket: 'auto', ...extra });
 }
 
 /** Forecast flow against the limit for one boundary, plus how often it was at the limit. One axis per chart. */
@@ -1650,7 +1718,7 @@ async function viewRemit(main) {
     // Emphasise the region the table is filtered to.
     if (state.rgsp) mapChart.dispatchAction({ type: 'highlight', name: state.rgsp });
   };
-  mapChart.on('click', (p) => { state.rgsp = state.rgsp === p.name ? null : p.name; writeHash(true); });
+  mapChart.on('click', (p) => drill({ rgsp: state.rgsp === p.name ? null : p.name }));
 
   // Outage table for the period shown (latest request wins).
   let ticket = 0;
@@ -1932,7 +2000,7 @@ async function viewInterconnectors(main) {
   const idx = new Map(cats.map((t, i) => [String(t), i]));
   let k = state.it != null && idx.has(String(state.it)) ? idx.get(String(state.it)) : null;
   const when = () => (k == null ? 'the whole range' : bucket === 'tod' ? `${spTime(cats[k])}, every day in the range` : bucketLabel(cats[k], bucket));
-  const pick = (code) => update({ ic: state.ic === code ? null : code }, true);
+  const pick = (code) => drill({ ic: state.ic === code ? null : code });
   const mark = () => (k == null ? { data: [] } : { silent: true, symbol: 'none', lineStyle: { color: css('--ink2'), type: 'dashed', width: 1.5 }, label: { show: false }, data: [{ xAxis: k }] });
 
   // Map, links table, KPIs and price details follow the period (latest request wins, so Play never shows a stale step).
@@ -1950,7 +2018,7 @@ async function viewInterconnectors(main) {
     icKpis($('#icKpis'), links.rows, all.rows[0] || {}, when(), peak, pdir, bucket);
     const peakCard = $('#icPeak');
     if (peakCard && peak) peakCard.onclick = () => (bucket === 'sp' && idx.has(String(peak.t)) ? choose(idx.get(String(peak.t)))
-      : update({ from: peak.t.slice(0, 10), to: peak.t.slice(0, 10), bucket: 'auto', it: peak.t }));
+      : drill({ from: peak.t.slice(0, 10), to: peak.t.slice(0, 10), bucket: 'auto', it: peak.t }));
     icWho($('#icLadder'), $('#icWho'), who.rows, all.rows[0] || {}, pdir, when());
     await icMap($('#icMap'), links.rows, mapBy, pick, when(), { prices: byIc.rows, who: who.rows, dir: pdir });
     $('#icTableTitle').textContent = `Interconnectors, ${when()}`;
@@ -1963,10 +2031,9 @@ async function viewInterconnectors(main) {
   const go = (i, quiet = false) => {
     k = i == null ? null : Math.max(0, Math.min(cats.length - 1, i));
     slider.value = String(k ?? cats.length - 1);
-    state.it = k == null ? null : String(cats[k]);
-    const [path, qs] = location.hash.split('?'), q = new URLSearchParams(qs || '');
-    if (state.it == null) q.delete('it'); else q.set('it', state.it);
-    history.replaceState(null, '', `${path}?${q}`);
+    followTrail(() => { state.it = k == null ? null : String(cats[k]); });
+    history.replaceState(null, '', stateHash());
+    drawZoomTrail();
     $('#icWhen').textContent = k == null ? 'Whole range' : when();
     $('#icAll').classList.toggle('primary', k == null);
     $('#icZoom').hidden = k == null || ['sp', 'tod'].includes(bucket);
@@ -1984,7 +2051,7 @@ async function viewInterconnectors(main) {
       go(k + 1);
     }, cats.length > 200 ? 300 : cats.length > 60 ? 450 : 800);
   };
-  const choose = (i) => { pause(); go(k === i ? null : i); };  // clicking the period already shown goes back to the whole range
+  const choose = (i) => { pause(); const j = k === i ? null : i; drill({ it: j == null ? null : String(cats[j]) }, { render: false }); go(j); };  // clicking the period already shown goes back to the whole range
   $('#icPlay').onclick = () => (icTimer ? pause() : play());
   $('#icBack').onclick = () => { pause(); go(k == null ? cats.length - 1 : k - 1); };
   $('#icFwd').onclick = () => { pause(); go(k == null ? 0 : k + 1); };
@@ -2243,7 +2310,7 @@ function icPriceTable(el, rows, all, dir, when) {
     { key: 'max', label: 'Highest', num: true, fmt: pound },
     { key: 'min', label: 'Lowest', num: true, fmt: pound },
     { key: 'hh', label: 'Half-hours', num: true, fmt: (v) => (v == null ? '–' : nf(0).format(v)), cls: 'hide-sm' },
-  ], data, { onRow: (r) => r.code && update({ ic: state.ic === r.code ? null : r.code }, true),
+  ], data, { onRow: (r) => r.code && drill({ ic: state.ic === r.code ? null : r.code }),
     rowTip: (r) => (r.code ? `${r.name}: prices in £/MWh. Click to show only ${r.name} in the charts` : 'All interconnectors together: prices in £/MWh'), limit: 20 });
   if (data.length === 1 && data[0].vol == null) el.insertAdjacentHTML('beforeend', `<div class="empty">NESO ${word} no energy over the interconnectors for ${esc(when)}.</div>`);
 }
@@ -2287,8 +2354,8 @@ async function icBreakdown(el, dim, metric) {
     const p = c.convertFromPixel({ seriesIndex: 0 }, [ev.offsetX, ev.offsetY]);
     const r = rows[p?.[1]];
     if (!r) return;
-    if (dim === 'party') update({ icp: r.g });
-    else if (dim === 'ic') update({ ic: r.g });
+    if (dim === 'party') drill({ icp: r.g });
+    else if (dim === 'ic') drill({ ic: r.g });
     else update({ isplit: 'kind' }, true);
   });
 }
@@ -2369,7 +2436,7 @@ async function icHeat(el, bucket, by, dir, half, setters, onSelect, mark) {
   c.on('click', (p) => {
     const t = key(p.value);
     if (bucket === 'sp') onSelect(t);
-    else update({ from: days[p.value[0]], to: days[p.value[0]], bucket: 'auto', it: t });
+    else drill({ from: days[p.value[0]], to: days[p.value[0]], bucket: 'auto', it: t });
   });
 }
 
@@ -2446,7 +2513,7 @@ function icWho(chartEl, tableEl, rows, all, dir, when) {
   const c = chart(chartEl);
   c.setOption(o, true);
   chartEl.style.cursor = 'pointer';
-  c.on('click', (p) => update({ icp: top[p.dataIndex].party }));
+  c.on('click', (p) => drill({ icp: top[p.dataIndex].party }));
   table(tableEl, [
     { key: 'ic', label: 'Interconnector', html: (r) => `<span class="tag"><span class="dot" style="background:${css(IC[r.ic]?.col || '--other')}"></span>${esc(icName(r.ic))}</span>` },
     { key: 'party', label: 'Counterparty', cls: 'wrap' },
@@ -2455,7 +2522,7 @@ function icWho(chartEl, tableEl, rows, all, dir, when) {
     { key: 'vol', label: word[0].toUpperCase() + word.slice(1), num: true, fmt: mwh, cls: 'hide-sm' },
     { key: 'n_marginal', label: 'Set price', num: true, fmt: (v, r) => (v ? `★ ${v}${r.n_hh > 1 || hh > 1 ? ` of ${r.n_hh}` : ''}` : '–') },
     { key: 'so', label: 'Type', cls: 'hide-sm', fmt: (v, r) => `${r.kind === 'Counterparty trade' ? '' : 'SO-SO · '}${v === 'Energy' ? 'Energy' : 'System'}` },
-  ], rows.map((r) => ({ ...r, avg: ratio(r.cost, r.vol) })), { onRow: (r) => update({ icp: r.party }),
+  ], rows.map((r) => ({ ...r, avg: ratio(r.cost, r.vol) })), { onRow: (r) => drill({ icp: r.party }),
     rowTip: (r) => `${r.kind} · ${r.so} · ${r.n_hh} half-hour${r.n_hh === 1 ? '' : 's'} with trades. Click to show only trades with ${r.party}`, limit: 60 });
 }
 
@@ -2606,7 +2673,7 @@ async function viewDfs(main) {
     api('dfs/providers', dParams({ group: 'party', party: state.dp || '', zone: state.dz || '' })),
     state.dp || state.dz ? api('dfs/events', dParams()) : null]);
   dKpis($('#dKpis'), events.rows, prov.rows, (allEv || events).rows);
-  const pickEv = (e) => update({ dev: e, dzev: state.dzev || '1' }, true);
+  const pickEv = (e) => drill({ dev: e, dzev: state.dzev || '1' });
   dEvents($('#dEvents'), events.rows, pickEv);
   const ev = events.rows.find((r) => r.event === state.dev) || events.rows[0];
   if (ev) loading($('#dStack'), () => dStack($('#dStack'), ev));
@@ -2859,7 +2926,7 @@ async function dScatter(el, events) {
   const c = chart(el);
   c.setOption(o, true);
   el.style.cursor = 'pointer';
-  c.on('click', (p) => { if (p.data?.r) update({ dev: p.data.r.event, dzev: state.dzev || '1' }, true); });
+  c.on('click', (p) => { if (p.data?.r) drill({ dev: p.data.r.event, dzev: state.dzev || '1' }); });
 }
 
 /** The 12 DFS zones coloured by a measure over the range, or for the selected event (zones it was closed to in grey). */
@@ -2909,7 +2976,7 @@ async function dZoneMap(el, by, ev) {
   const c = chart(el);
   c.setOption(o, true);
   el.style.cursor = 'pointer';
-  c.on('click', (p) => update({ dz: String(state.dz) === p.name ? null : p.name, dev: null }, true));
+  c.on('click', (p) => drill({ dz: String(state.dz) === p.name ? null : p.name, dev: null }));
 }
 
 async function dTime(el, tableEl, bucket, metric, split, evOnly) {
@@ -3010,7 +3077,7 @@ async function dBreakdown(el, dim, metric) {
     if (dim !== 'party') return;
     const p = c.convertFromPixel({ seriesIndex: 0 }, [ev.offsetX, ev.offsetY]);
     const r = rows[p?.[1]];
-    if (r) update({ dp: state.dp === r.g ? null : r.g, dev: null });
+    if (r) drill({ dp: state.dp === r.g ? null : r.g, dev: null });
   });
 }
 
@@ -3041,7 +3108,7 @@ async function dHeat(el) {
   const c = chart(el);
   c.setOption(o, true);
   el.style.cursor = 'pointer';
-  c.on('click', (p) => { const d = days[p.value[0]]; update({ from: d, to: d, bucket: 'auto', dev: null }); });
+  c.on('click', (p) => { const d = days[p.value[0]]; drill({ from: d, to: d, bucket: 'auto', dev: null }); });
 }
 
 let pollTimer = null;
