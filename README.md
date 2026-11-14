@@ -169,7 +169,15 @@ SQLite (see "What is stored" below).
   Europe with each link drawn from its GB landing point to the far end (width: traded volume, net cost or physical flow; arrows:
   which way the energy went), a table per link, the usual time chart (net cost, volume bought/sold, average price; split by link,
   direction, counterparty, trade type or SO flag), a counterparty breakdown, physical flow per link (Elexon `FUELHH`, positive into
-  GB) and a day x settlement-period grid. Click a link or counterparty to filter the tab to it. Trades come out of the same monthly
+  GB) and a day x settlement-period grid. Click a link or counterparty to filter the tab to it. **Periods**: as on the REMIT tab,
+  clicking a period in any of the time charts (or Play, the arrows and the slider) puts that period on the map, the links table, the
+  KPIs and the price details; a dashed line marks it on the charts, and *Whole range* goes back to totals. Clicking a half-hour in
+  the grid shows that half-hour (zooming to its day first unless the tab is already half-hourly). **Prices**: the trades are
+  pay-as-bid, so each has its own price. The tab shows the volume-weighted average (cost / volume), the highest and lowest single
+  trade, and a clearing price: the marginal trade in each half-hour (the dearest NESO bought, the cheapest it sold), averaged over
+  the half-hours with trades. The *Trade prices* chart shows these over time for purchases or sales, and *Price details* per link
+  for the period shown. Each stored row keeps its highest and lowest single-trade price for this (`price_max`, `price_min`); stores
+  from before these columns existed are reset and backfilled on the next refresh. Trades come out of the same monthly
   DISBSAD download as the Total costs figures, so they cost no extra requests; flows are one `FUELHH` request a month. The first
   refresh after upgrading backfills from April 2025 (about two minutes); later refreshes re-fetch the current month. Stored in
   `data/ic_trade.parquet` (summed per settlement period, link, counterparty, kind, SO flag and direction; about 80k rows) and

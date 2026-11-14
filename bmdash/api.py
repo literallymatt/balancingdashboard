@@ -411,21 +411,38 @@ IC_MEASURES = """
     sum(CASE WHEN volume > 0 THEN volume END) AS buy_vol, sum(CASE WHEN volume < 0 THEN volume END) AS sell_vol,
     sum(CASE WHEN volume > 0 THEN cost END) AS buy_cost, sum(CASE WHEN volume < 0 THEN cost END) AS sell_cost,
     sum(CASE WHEN volume > 0 AND cost <> 0 THEN volume END) AS buy_pvol, sum(CASE WHEN volume < 0 AND cost <> 0 THEN volume END) AS sell_pvol,
-    sum(n) AS n_trades"""
+    sum(n) AS n_trades,
+    max(CASE WHEN volume > 0 THEN price_max END) AS buy_max, min(CASE WHEN volume > 0 THEN price_min END) AS buy_min,
+    max(CASE WHEN volume < 0 THEN price_max END) AS sell_max, min(CASE WHEN volume < 0 THEN price_min END) AS sell_min"""
 IC_FLOW = """count(*) AS n, avg(flow_mw) AS flow_avg, min(flow_mw) AS flow_min, max(flow_mw) AS flow_max,
     sum(CASE WHEN flow_mw > 0 THEN flow_mw * 0.5 ELSE 0 END) AS import_mwh,
     sum(CASE WHEN flow_mw < 0 THEN flow_mw * 0.5 ELSE 0 END) AS export_mwh"""
 
 
+def _at(at: str | None, at_bucket: str) -> tuple[str, list]:
+    """Restrict to one time bucket: `at` is a bucket label from /api/ic/agg at granularity `at_bucket`."""
+    if not at:
+        return "", []
+    if at_bucket not in BUCKETS or at_bucket == "none":
+        raise HTTPException(400, "bad at_bucket")
+    try:
+        v = int(at) if at_bucket == "tod" else datetime.fromisoformat(at[:19])
+    except ValueError:
+        raise HTTPException(400, "bad at")
+    return f" AND {BUCKETS[at_bucket]} = ?", [v]
+
+
 def ic_filters(start: date = Query(alias="from"), end: date = Query(alias="to"), ic: str | None = None,
-               direction: str | None = None, party: str | None = None, kind: str | None = None, so: str | None = None):
+               direction: str | None = None, party: str | None = None, kind: str | None = None, so: str | None = None,
+               at: str | None = None, at_bucket: str = "day"):
     where, params = ["settlement_date BETWEEN ? AND ?"], [start, end]
     for dim, raw in (("ic", ic), ("direction", direction), ("party", party), ("kind", kind), ("so", so)):
         vals = [v for v in (raw or "").split("|") if v]
         if vals:
             where.append(f"{IC_DIMS[dim]} IN ({','.join('?' * len(vals))})")
             params += vals
-    return " AND ".join(where), params
+    cond, p = _at(at, at_bucket)
+    return " AND ".join(where) + cond, params + p
 
 
 @app.get("/api/ic/meta")
@@ -461,12 +478,35 @@ def ic_agg(f=Depends(ic_filters), bucket: str = "day", group: str = "none", top:
 
 
 @app.get("/api/ic/links")
-def ic_links(f=Depends(ic_filters)):
-    """Per link over the range: NESO's trades and the physical flow."""
+def ic_links(f=Depends(ic_filters), at: str | None = None, at_bucket: str = "day"):
+    """Per link over the range (or the one time bucket `at`): NESO's trades and the physical flow."""
     where, params = f
     trades = {r["ic"]: r for r in q(f"SELECT ic, {IC_MEASURES}, count(DISTINCT party) AS n_parties FROM ic_trade WHERE {where} GROUP BY 1", params)}
-    flows = {r["ic"]: r for r in q(f"SELECT ic, {IC_FLOW} FROM ic_flow WHERE settlement_date BETWEEN ? AND ? GROUP BY 1", params[:2])}
+    cond, p = _at(at, at_bucket)
+    flows = {r["ic"]: r for r in q(f"SELECT ic, {IC_FLOW} FROM ic_flow WHERE settlement_date BETWEEN ? AND ?{cond} GROUP BY 1", params[:2] + p)}
     return {"rows": [{"ic": k, **(trades.get(k) or {}), **(flows.get(k) or {})} for k in sorted(set(trades) | set(flows))]}
+
+
+@app.get("/api/ic/prices")
+def ic_prices(f=Depends(ic_filters), bucket: str = "day", group: str = "none"):
+    """Trade prices per time bucket and group: volume-weighted average, highest and lowest single trade, and the
+    average clearing price, i.e. the half-hourly marginal trade (the dearest NESO bought, the cheapest it sold) averaged
+    over the half-hours with trades. Not folded: one row per group value."""
+    if bucket not in BUCKETS or (group != "none" and group not in IC_DIMS):
+        raise HTTPException(400, "bad bucket or group")
+    where, params = f
+    b, g = BUCKETS[bucket], ("'All'" if group == "none" else IC_DIMS[group])
+    rows = q(f"SELECT {b} AS t, {g} AS g, {IC_MEASURES} FROM ic_trade WHERE {where} GROUP BY 1, 2 ORDER BY 1, 2", params)
+    marg = q(f"""WITH h AS (SELECT settlement_date, sp, {g} AS g,
+                     max(CASE WHEN volume > 0 THEN price_max END) AS bm, min(CASE WHEN volume < 0 THEN price_min END) AS sm
+                     FROM ic_trade WHERE {where} GROUP BY 1, 2, 3)
+                 SELECT {b} AS t, g, avg(bm) AS buy_clear, avg(sm) AS sell_clear, count(bm) AS buy_hh, count(sm) AS sell_hh
+                 FROM h GROUP BY 1, 2""", params)
+    by = {(str(r["t"]), r["g"]): r for r in marg}
+    for r in rows:
+        m = by.get((str(r["t"]), r["g"]), {})
+        r.update({k: m.get(k) for k in ("buy_clear", "sell_clear", "buy_hh", "sell_hh")})
+    return {"rows": _clean(rows)}
 
 
 @app.get("/api/ic/flow")

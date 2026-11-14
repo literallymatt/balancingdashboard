@@ -49,9 +49,11 @@ class Api(private val db: SqlDb, private val control: IngestControl, private val
         r == "remit/agg" -> { checkBucket(p); Remit.aggregate(db, LocalDate.parse(date(p, "from")), LocalDate.parse(date(p, "to")), kind(p), p["bucket"] ?: "day", bool(p, "long")) }
         r == "remit/outages" -> { checkBucket(p); mapOf("rows" to Remit.outages(db, LocalDate.parse(date(p, "from")), LocalDate.parse(date(p, "to")), kind(p), p["bucket"] ?: "day", req(p, "t"), bool(p, "long"))) }
         r == "ic/meta" -> Interconnectors.meta(db, (costs?.status() ?: emptyMap()))
-        r == "ic/agg" -> Interconnectors.agg(db, Interconnectors.Filter(p, date(p, "from"), date(p, "to")),
+        r == "ic/agg" -> Interconnectors.agg(db, Interconnectors.Filter(p, date(p, "from"), date(p, "to"), BUCKETS),
             BUCKETS[p["bucket"] ?: "day"] ?: throw HttpError(400, "bad bucket or group"), p["group"] ?: "none", (p["top"] ?: "8").toInt(), p["rank"] ?: "cash")
-        r == "ic/links" -> Interconnectors.links(db, Interconnectors.Filter(p, date(p, "from"), date(p, "to")))
+        r == "ic/links" -> Interconnectors.links(db, Interconnectors.Filter(p, date(p, "from"), date(p, "to"), BUCKETS), Interconnectors.At(p, BUCKETS))
+        r == "ic/prices" -> Interconnectors.prices(db, Interconnectors.Filter(p, date(p, "from"), date(p, "to"), BUCKETS),
+            BUCKETS[p["bucket"] ?: "day"] ?: throw HttpError(400, "bad bucket or group"), p["group"] ?: "none")
         r == "ic/flow" -> Interconnectors.flow(db, date(p, "from"), date(p, "to"), BUCKETS[p["bucket"] ?: "day"] ?: throw HttpError(400, "bad bucket"), p["ic"])
         r == "dfs/meta" -> Dfs.meta(db, (costs?.status() ?: emptyMap()))
         r == "dfs/agg" -> Dfs.agg(db, Dfs.Filter(p, date(p, "from"), date(p, "to")),
