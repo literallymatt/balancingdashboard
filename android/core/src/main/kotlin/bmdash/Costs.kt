@@ -6,7 +6,8 @@ import java.time.LocalDate
  * System-level balancing costs for the Total costs tab, from public sources (see bmdash/costs.py):
  * NESO's daily cost data by purpose, Elexon BSAD (non-BM actions) and the EAC response/reserve auctions;
  * plus the network constraint data for the Constraints tab (daily constraint costs, half-hourly boundary flows) and the
- * REMIT outage messages for the REMIT tab (see Remit.kt).
+ * REMIT outage messages for the REMIT tab (see Remit.kt), and the interconnector trades and flows for the Interconnectors tab
+ * (see Interconnectors.kt).
  * Totals only: there is no unit or asset behind these figures.
  */
 class CostIngester(private val db: SqlDb) {
@@ -47,22 +48,35 @@ class CostIngester(private val db: SqlDb) {
             Store.init(db)
             val neso = Elexon(2, base = Elexon.NESO_BASE)
             val elexon = Elexon(2)
-            for ((name, fn) in listOf<Pair<String, () -> List<List<Any?>>>>(
-                "neso_purpose" to { fetchPurpose(neso, start, end) },
-                "eac" to { fetchEac(neso, start, end) },
-                "bsad" to { fetchBsad(elexon, start, end) },
-                "thermal" to { fetchThermal(neso, start, end) },
-                "constraint_type" to { fetchConstraintTypes(neso, start, end) },
+            // The Interconnectors tab's trades come out of the BSAD download; until they are held, BSAD is fetched from the
+            // start of the history so the tab gets a full backfill.
+            val icStart = if (Interconnectors.held(db) || start.isBefore(DEFAULT_START)) start else DEFAULT_START
+            val icSink = Interconnectors.TradeSink()
+            var icOk = false
+            for ((name, from, fn) in listOf<Triple<String, LocalDate, () -> List<List<Any?>>>>(
+                Triple("neso_purpose", start) { fetchPurpose(neso, start, end) },
+                Triple("eac", start) { fetchEac(neso, start, end) },
+                Triple("bsad", icStart) { fetchBsad(elexon, icStart, end, icSink).also { icOk = true } },
+                Triple("thermal", start) { fetchThermal(neso, start, end) },
+                Triple("constraint_type", start) { fetchConstraintTypes(neso, start, end) },
             )) {
                 try {
                     val rows = fn()
                     db.transaction {
-                        db.exec("DELETE FROM cost_daily WHERE source = ? AND date BETWEEN ? AND ?", listOf(name, start.toString(), end.toString()))
+                        db.exec("DELETE FROM cost_daily WHERE source = ? AND date BETWEEN ? AND ?", listOf(name, from.toString(), end.toString()))
                         db.insertBatch("INSERT OR REPLACE INTO cost_daily VALUES (?, ?, ?, ?)", rows)
                     }
                 } catch (e: Exception) {
                     errors.add("$name: ${e.message}")
                 }
+            }
+            if (icOk) {
+                try { Interconnectors.writeTrades(db, icSink.rows(), icStart, end) } catch (e: Exception) { errors.add("interconnector trades: ${e.message}") }
+            }
+            try {
+                Interconnectors.ingestFlows(db, elexon, icStart, end)
+            } catch (e: Exception) {
+                errors.add("interconnector flows: ${e.message}")
             }
             // Half-hourly boundary flows and limits (Constraints tab), month by month so a phone never holds more
             // than one month in memory. Day-ahead forecasts, so tomorrow is usually published too.
@@ -161,9 +175,10 @@ class CostIngester(private val db: SqlDb) {
         return rows
     }
 
-    private class BsadAcc { val seen = HashSet<String>(); val by = HashMap<String, Double>() }
+    private class BsadAcc { val seen = HashSet<String>(); val by = HashMap<String, Double>(); val ic = Interconnectors.TradeSink() }
 
-    private fun fetchBsad(api: Elexon, start: LocalDate, end: LocalDate): List<List<Any?>> {
+    /** Daily BSAD cost by service; [icSink] also collects the interconnector trades from the same download. */
+    private fun fetchBsad(api: Elexon, start: LocalDate, end: LocalDate, icSink: Interconnectors.TradeSink): List<List<Any?>> {
         val rows = ArrayList<List<Any?>>()
         for ((first, next) in months(start, end)) {
             val a = if (first.isAfter(start)) first else start
@@ -171,11 +186,13 @@ class CostIngester(private val db: SqlDb) {
             val acc = api.read("/datasets/DISBSAD/stream", listOf("from" to "${a}T00:00Z", "to" to "${b}T00:00Z"), { BsadAcc() }) { x, r ->
                 val ds = r.str("settlementDate")
                 if (ds != null && ds >= a.toString() && ds < b.toString() && x.seen.add("$ds|${r["settlementPeriod"]}|${r["id"]}")) {
+                    x.ic.add(r)
                     val svc = (r.str("service") ?: "").lowercase()
                     val cat = if (svc == "energy") "energy" else if (svc == "system") "system" else "other"
                     x.by["$ds|$cat"] = (x.by["$ds|$cat"] ?: 0.0) + (r.dbl("cost") ?: 0.0)
                 }
             }
+            icSink.merge(acc.ic)  // per-attempt accumulator: a retried month never double-counts
             for (ds in acc.by.keys.map { it.substringBefore('|') }.toSortedSet())
                 for (cat in listOf("energy", "system", "other")) rows.add(listOf(ds, "bsad", cat, acc.by["$ds|$cat"] ?: 0.0))
         }

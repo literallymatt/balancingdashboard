@@ -159,6 +159,22 @@ SQLite (see "What is stored" below).
   25,000 messages and three to five minutes; later refreshes fetch only what was published since, plus the forward
   window, in seconds. Stored in `data/remit_msg.parquet` and `data/remit_seg.parquet` (1.3 MB; phone: the `remit_msg`
   and `remit_seg` tables, about 10 MB).
+- **Interconnectors tab**: the trades NESO takes on the interconnectors to balance the system, and what flowed. Interconnectors
+  do not take part in the Balancing Mechanism (no acceptances on the `I_` units), so NESO balances across them with trades
+  outside it, which Elexon publishes in BSAD (`DISBSAD`). *Counterparty trades* buy or sell energy from a trader for delivery
+  over one link; the BSAD asset id is the trader's interconnector unit, whose prefix names the link (`IFG-DSKC1`: IFA, Danske
+  Commodities; `I2G` IFA2, `ILG` ElecLink, `IBG` BritNed, `ING` Nemo Link, `IVG` Viking Link, ...). *SO-SO trades* are with the
+  neighbouring system operator (asset ids `IF1`, `IF2`, `EL1`, `NSL`, `EWIC`, `MOYLE`) and are often published with no cost, so
+  they count in volumes but not average prices. Positive volume is energy NESO bought (into GB). The tab shows a map of north-west
+  Europe with each link drawn from its GB landing point to the far end (width: traded volume, net cost or physical flow; arrows:
+  which way the energy went), a table per link, the usual time chart (net cost, volume bought/sold, average price; split by link,
+  direction, counterparty, trade type or SO flag), a counterparty breakdown, physical flow per link (Elexon `FUELHH`, positive into
+  GB) and a day x settlement-period grid. Click a link or counterparty to filter the tab to it. Trades come out of the same monthly
+  DISBSAD download as the Total costs figures, so they cost no extra requests; flows are one `FUELHH` request a month. The first
+  refresh after upgrading backfills from April 2025 (about two minutes); later refreshes re-fetch the current month. Stored in
+  `data/ic_trade.parquet` (summed per settlement period, link, counterparty, kind, SO flag and direction; about 80k rows) and
+  `data/ic_flow_hh.parquet` (phone: the `ic_trade` and `ic_flow` tables). Landing points are approximate (outline: Natural Earth,
+  public domain, `static/vendor/nweurope.json`).
 - **Instruction replay**: on a unit's page, the Day detail card can replay NESO's instructions
   for the day in the order they were issued (plays and loops on its own by default; pause, step,
   slider, and a Loop toggle; reduced-motion users get the final state), showing the unit's plan

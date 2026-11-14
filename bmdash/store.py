@@ -175,4 +175,8 @@ def connect() -> duckdb.DuckDBPyConnection:
     con.execute(f"CREATE VIEW cost_daily AS SELECT * FROM read_parquet('{costs}')")
     hh = (DATA / "constraint_hh.parquet").as_posix()
     con.execute(f"CREATE VIEW constraint_hh AS SELECT * FROM read_parquet('{hh}')")
+    from . import interconnectors  # Interconnectors tab: trades and flows (see interconnectors.py)
+    interconnectors.ensure_layout()
+    for name, path in (("ic_trade", interconnectors.TRADE_PATH), ("ic_flow", interconnectors.FLOW_PATH)):
+        con.execute(f"CREATE VIEW {name} AS SELECT * FROM read_parquet('{path.as_posix()}')")
     return con
