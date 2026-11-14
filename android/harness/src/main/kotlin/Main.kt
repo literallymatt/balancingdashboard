@@ -1,6 +1,7 @@
 package bmdash.harness
 
 import bmdash.Api
+import bmdash.CostIngester
 import bmdash.DebugSampler
 import bmdash.Ingester
 import bmdash.SqlDb
@@ -96,6 +97,11 @@ fun main(args: Array<String>) {
             ingester.timings.toSortedMap().forEach { (k, v) -> println("  [timing] %-40s %6.1fs".format(k, v.get() / 1000.0)) }
             if (job.failed.isNotEmpty()) { println("Failed: ${job.failed} ${job.error}"); System.exit(1) }
         }
+        "costs" -> {
+            val ci = CostIngester(db)
+            val ok = ci.run(opt(args, "from")?.let(LocalDate::parse) ?: CostIngester.DEFAULT_START, opt(args, "to")?.let(LocalDate::parse) ?: Ingester.today())
+            println("costs: ${if (ok) "ok" else "errors: " + ci.error}")
+        }
         "serve" -> {
             val staticDir = File(opt(args, "static", "../bmdash/static")!!)
             val control = ThreadIngestControl(ingester)
@@ -113,7 +119,8 @@ fun main(args: Array<String>) {
                     "thermal_name" to "n/a (JVM harness)", "batt_temp_c" to 31.0 + Math.random(), "headroom" to 0.3 + Math.random() / 10,
                 )
             }
-            val api = Api(db, control, DebugSampler(probe, control))
+            val ci = CostIngester(db)
+            val api = Api(db, control, DebugSampler(probe, control), costs = ci, startCosts = { Thread { ci.run() }.apply { isDaemon = true; start() } })
             val port = opt(args, "port", "8791")!!.toInt()
             val server = HttpServer.create(InetSocketAddress("127.0.0.1", port), 0)
             server.executor = java.util.concurrent.Executors.newFixedThreadPool(8)

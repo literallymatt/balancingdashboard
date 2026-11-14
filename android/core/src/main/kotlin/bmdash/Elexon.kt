@@ -13,7 +13,7 @@ import java.util.zip.GZIPInputStream
  * Blocking client for the Elexon Insights (BMRS) API with bounded parallelism and retries.
  * Responses are stream-parsed record by record: memory use does not depend on response size.
  */
-class Elexon(concurrency: Int = 8, private val retries: Int = 6) {
+class Elexon(concurrency: Int = 8, private val retries: Int = 6, private val base: String = BASE) {
     private val gate = Semaphore(concurrency)
     private val counter = AtomicInteger()
     val requests: Int get() = counter.get()
@@ -24,9 +24,9 @@ class Elexon(concurrency: Int = 8, private val retries: Int = 6) {
      * A 404 yields an empty accumulator (Elexon has no data).
      */
     fun <T> read(path: String, params: List<Pair<String, String>>, newAcc: () -> T,
-                 onRecord: (T, Map<String, Any?>) -> Unit): T {
+                 recordPath: List<String> = listOf("data"), onRecord: (T, Map<String, Any?>) -> Unit): T {
         val qs = params.joinToString("&") { (k, v) -> "${enc(k)}=${enc(v)}" }
-        val url = URL(BASE + path + if (qs.isEmpty()) "" else "?$qs")
+        val url = URL(base + path + if (qs.isEmpty()) "" else "?$qs")
         var last: Exception? = null
         for (attempt in 0 until retries) {
             var retryable = true
@@ -46,7 +46,7 @@ class Elexon(concurrency: Int = 8, private val retries: Int = 6) {
                             val raw = c.inputStream
                             val ins = if ("gzip".equals(c.contentEncoding, true)) GZIPInputStream(raw, 32 * 1024) else raw
                             val acc = newAcc()
-                            InputStreamReader(ins, Charsets.UTF_8).use { JsonReader(it).streamRecords { rec -> onRecord(acc, rec) } }
+                            InputStreamReader(ins, Charsets.UTF_8).use { JsonReader(it).streamRecords(recordPath) { rec -> onRecord(acc, rec) } }
                             return acc
                         }
                         status == 404 -> return newAcc()
@@ -68,13 +68,14 @@ class Elexon(concurrency: Int = 8, private val retries: Int = 6) {
     }
 
     /** Small responses only: collect every record. */
-    fun list(path: String, params: List<Pair<String, String>> = emptyList()): List<Map<String, Any?>> =
-        read(path, params, { ArrayList<Map<String, Any?>>() }) { acc, r -> acc.add(r) }
+    fun list(path: String, params: List<Pair<String, String>> = emptyList(), recordPath: List<String> = listOf("data")): List<Map<String, Any?>> =
+        read(path, params, { ArrayList<Map<String, Any?>>() }, recordPath) { acc, r -> acc.add(r) }
 
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
 
     companion object {
         const val BASE = "https://data.elexon.co.uk/bmrs/api/v1"
+        const val NESO_BASE = "https://api.neso.energy/api/3/action"
         private val RETRY = setOf(429, 500, 502, 503, 504)
     }
 }

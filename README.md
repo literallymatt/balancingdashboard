@@ -107,6 +107,19 @@ SQLite (see "What is stored" below).
   readings cover everything. It is not available in the desktop version.
 - **Info buttons**: the small *i* buttons next to KPI tiles, headings, controls and table columns
   explain terms such as SO-flagged, bid-offer pairs and settlement periods (tap to open).
+- **Total costs tab**: system-level monthly balancing costs, with no unit or asset behind them, so they
+  sit apart from the unit tabs. *By source* stacks the Balancing Mechanism, non-BM actions (Elexon BSAD)
+  and response/reserve availability (NESO EAC auctions); *By purpose* is NESO's own split of its daily cost
+  total (constraints, energy imbalance, reserve, frequency control, other). Sources: NESO Data Portal
+  (daily balancing costs; EAC auction results, via its SQL aggregation endpoint), Elexon `DISBSAD`.
+  BM cost is derived as NESO's total minus BSAD: on every complete day that matched the unit-level Elexon BM
+  cashflows to within £0.4M (about 1%). EAC reserve products are half-hour windows and response products four-hour
+  windows, so the multiplier is per product. NESO publishes the daily file a few days late, so a day counts
+  once it has 44+ settlement periods and the latest month is shown as partial. **Not included** (no public monthly
+  actuals found): other ancillary services (reactive, black start, stability/voltage, reserve delivery), SO-SO
+  trades (Elexon's `SOSO` is a price ladder, not executed trades) and reconciliation. Refresh with
+  `uv run bmdash costs` (also run at the end of `bmdash ingest`) or the Refresh button; the phone app refreshes
+  it on launch when older than 12 hours.
 - **Instruction replay**: on a unit's page, the Day detail card can replay NESO's instructions
   for the day in the order they were issued (play, pause, step, slider), showing the unit's plan
   (PN), its output as instructed so far, the previous state and the newest instruction, with a

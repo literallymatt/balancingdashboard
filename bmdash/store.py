@@ -116,6 +116,10 @@ def ensure_layout() -> None:
             _atomic_write(_table(name, []), p)
     if not (DATA / "units.parquet").exists():
         write_units([])
+    if not (DATA / "cost_daily.parquet").exists():
+        _atomic_write(pa.table({"date": pa.array([], pa.date32()), "source": pa.array([], pa.string()),
+                                "category": pa.array([], pa.string()), "amount": pa.array([], pa.float64())}),
+                      DATA / "cost_daily.parquet")
 
 
 _DATE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\.parquet$")
@@ -162,4 +166,6 @@ def connect() -> duckdb.DuckDBPyConnection:
         con.execute(f"CREATE VIEW {name} AS SELECT * FROM read_parquet('{glob}', union_by_name=true)")
     units = (DATA / "units.parquet").as_posix()
     con.execute(f"CREATE VIEW units AS SELECT * FROM read_parquet('{units}')")
+    costs = (DATA / "cost_daily.parquet").as_posix()
+    con.execute(f"CREATE VIEW cost_daily AS SELECT * FROM read_parquet('{costs}')")
     return con

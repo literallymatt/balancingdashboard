@@ -27,6 +27,9 @@ object Store {
         // A day is "held" once its row is here; written in the same transaction as the day's data.
         "CREATE TABLE IF NOT EXISTS day_meta (settlement_date TEXT PRIMARY KEY, fetched_at INTEGER)",
         "CREATE TABLE IF NOT EXISTS cache (k TEXT PRIMARY KEY, v TEXT)",
+        // System-level balancing costs (Total costs tab): no unit detail, so kept apart from the BM tables.
+        "CREATE TABLE IF NOT EXISTS cost_daily (date TEXT NOT NULL, source TEXT NOT NULL, category TEXT NOT NULL, amount REAL, PRIMARY KEY (date, source, category))",
+        "CREATE TABLE IF NOT EXISTS cost_meta (k TEXT PRIMARY KEY, v TEXT)",
     )
 
     fun init(db: SqlDb) {

@@ -20,11 +20,21 @@ def main() -> None:
     i.add_argument("--concurrency", type=int, default=16, help="simultaneous HTTP requests")
     i.add_argument("--parallel-days", type=int, default=4)
 
+    c = sub.add_parser("costs", help="fetch system-level balancing costs (NESO, Elexon BSAD, EAC) for the Total costs tab")
+    c.add_argument("--from", dest="start", help="first date (default 2025-04-01)")
+    i.add_argument("--no-costs", action="store_true", help="skip the system-level cost refresh at the end")
+
     s = sub.add_parser("serve", help="run the dashboard")
     s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--port", type=int, default=8780)
 
     a = p.parse_args()
+    if a.cmd == "costs":
+        from . import costs
+        info = costs.ingest_costs(date.fromisoformat(a.start) if a.start else costs.DEFAULT_START)
+        if info["error"]:
+            raise SystemExit(f"Some sources failed: {info['error']}")
+        return
     if a.cmd == "serve":
         import uvicorn
         uvicorn.run("bmdash.api:app", host=a.host, port=a.port)
@@ -45,6 +55,13 @@ def main() -> None:
     if d["failed"]:
         print("Failed days:", ", ".join(sorted(d["failed"])), "-", d["error"])
         raise SystemExit(1)
+    if not a.no_costs:
+        from . import costs
+        print("System-level costs:")
+        try:
+            costs.ingest_costs()
+        except Exception as e:  # offline or a source is down: the unit-level data is already saved
+            print("  skipped:", e)
 
 
 if __name__ == "__main__":
