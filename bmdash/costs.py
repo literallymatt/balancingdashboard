@@ -168,14 +168,33 @@ def write_all(rows: list[tuple]) -> None:
     store._atomic_write(t, store.DATA / "cost_daily.parquet")
 
 
-def ingest_costs(start: date = DEFAULT_START, end: date | None = None, log=print) -> dict:
-    """Fetch every cost source for [start, end] and merge into data/cost_daily.parquet."""
+def incremental_start() -> date:
+    """Where a refresh needs to start when data is already held.
+
+    Only the recent days can change (NESO publishes a few days late and revises briefly), so re-fetch from
+    7 days before the last fetched date -- snapped to the 1st of that month, because the monthly EAC rows are
+    dated the 1st and the merge replaces whole [start, end] windows per source.
+    """
+    meta = status()
+    if not meta.get("updated_at") or not meta.get("end") or not read_all():
+        return DEFAULT_START
+    d = date.fromisoformat(meta["end"]) - timedelta(days=7)
+    return max(DEFAULT_START, d.replace(day=1))
+
+
+def ingest_costs(start: date | None = None, end: date | None = None, log=print) -> dict:
+    """Fetch every cost source for [start, end] and merge into data/cost_daily.parquet.
+
+    With no explicit start this is incremental: a full backfill from DEFAULT_START the first time, then only
+    the recent window (see incremental_start)."""
+    start = start or incremental_start()
     end = end or datetime.now(timezone.utc).date()
     store.DATA.mkdir(parents=True, exist_ok=True)
     errors, new = [], []
     with httpx.Client(headers={"User-Agent": "bmdash/0.1"}, follow_redirects=True) as client:
         for name, fn in (("neso_purpose", fetch_purpose), ("eac", fetch_eac), ("bsad", fetch_bsad)):
             try:
+                log(f"  {name}: fetching {start} .. {end}", flush=True) if log is print else log(f"  {name}: fetching")
                 got = fn(client, start, end)
                 log(f"  {name}: {len(got)} rows")
                 new += got
@@ -187,7 +206,9 @@ def ingest_costs(start: date = DEFAULT_START, end: date | None = None, log=print
     # replace what this run fetched, within the fetched range; keep everything else
     keep = [r for r in read_all() if not (r[1] in sources and start <= r[0] <= end)]
     write_all(keep + new)
-    info = {"updated_at": time.time(), "start": start.isoformat(), "end": end.isoformat(), "error": "; ".join(errors)}
+    prev = status()
+    first = min(start.isoformat(), prev.get("start") or start.isoformat())
+    info = {"updated_at": time.time(), "start": first, "end": end.isoformat(), "error": "; ".join(errors)}
     META.write_text(json.dumps(info))
     return info
 

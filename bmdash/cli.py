@@ -21,7 +21,7 @@ def main() -> None:
     i.add_argument("--parallel-days", type=int, default=4)
 
     c = sub.add_parser("costs", help="fetch system-level balancing costs (NESO, Elexon BSAD, EAC) for the Total costs tab")
-    c.add_argument("--from", dest="start", help="first date (default 2025-04-01)")
+    c.add_argument("--from", dest="start", help="first date (default: incremental -- recent days only once data is held, else 2025-04-01)")
     i.add_argument("--no-costs", action="store_true", help="skip the system-level cost refresh at the end")
 
     s = sub.add_parser("serve", help="run the dashboard")
@@ -31,7 +31,7 @@ def main() -> None:
     a = p.parse_args()
     if a.cmd == "costs":
         from . import costs
-        info = costs.ingest_costs(date.fromisoformat(a.start) if a.start else costs.DEFAULT_START)
+        info = costs.ingest_costs(date.fromisoformat(a.start) if a.start else None)
         if info["error"]:
             raise SystemExit(f"Some sources failed: {info['error']}")
         return

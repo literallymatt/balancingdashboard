@@ -19,9 +19,27 @@ class CostIngester(private val db: SqlDb) {
         )
     }
 
-    /** Fetch every source for [start]..[end] and merge into the store. Each source is independent: one failing keeps the rest. */
-    fun run(start: LocalDate = DEFAULT_START, end: LocalDate = Ingester.today()): Boolean {
+    /**
+     * Where a refresh needs to start when data is already held: only the recent days can change, so 7 days
+     * before the last fetched date, snapped to the 1st of that month (monthly EAC rows are dated the 1st and
+     * the merge replaces whole [start, end] windows per source).
+     */
+    private fun incrementalStart(): LocalDate {
+        val meta = status()
+        val end = meta["end"] as? String ?: return DEFAULT_START
+        if (meta["updated_at"] == null) return DEFAULT_START
+        val has = db.query("SELECT 1 FROM cost_daily LIMIT 1").isNotEmpty()
+        if (!has) return DEFAULT_START
+        val d = LocalDate.parse(end).minusDays(7).withDayOfMonth(1)
+        return if (d.isBefore(DEFAULT_START)) DEFAULT_START else d
+    }
+
+    /** Fetch every source for [start]..[end] and merge into the store. Each source is independent: one failing
+     *  keeps the rest. With no explicit start: full backfill the first time, then only the recent window. */
+    fun run(startArg: LocalDate? = null, end: LocalDate = Ingester.today()): Boolean {
         synchronized(this) { if (running) return false; running = true }
+        val prevStart = status()["start"] as? String
+        val start = startArg ?: incrementalStart()
         val errors = ArrayList<String>()
         try {
             Store.init(db)
@@ -47,8 +65,9 @@ class CostIngester(private val db: SqlDb) {
         } finally {
             error = errors.joinToString("; ")
             runCatching {
+                val first = if (prevStart != null && prevStart < start.toString()) prevStart else start.toString()
                 db.transaction {
-                    for ((k, v) in listOf("updated_at" to (System.currentTimeMillis() / 1000.0).toString(), "start" to start.toString(),
+                    for ((k, v) in listOf("updated_at" to (System.currentTimeMillis() / 1000.0).toString(), "start" to first,
                         "end" to end.toString(), "error" to error)) db.exec("INSERT OR REPLACE INTO cost_meta VALUES (?, ?)", listOf(k, v))
                 }
             }
