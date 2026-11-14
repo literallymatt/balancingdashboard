@@ -509,6 +509,25 @@ def ic_prices(f=Depends(ic_filters), bucket: str = "day", group: str = "none"):
     return {"rows": _clean(rows)}
 
 
+@app.get("/api/ic/trades")
+def ic_trades(f=Depends(ic_filters), dir: str = "buy"):
+    """Who set the price: priced trades in the range (or the time bucket `at`) per link x counterparty x trade type x
+    SO flag, for energy NESO bought (`dir=buy`) or sold. `n_marginal` counts the half-hours in which the group held the
+    marginal trade (the dearest bought, or the cheapest sold), i.e. set that half-hour's clearing price."""
+    if dir not in ("buy", "sell"):
+        raise HTTPException(400, "bad dir")
+    where, params = f
+    sign, best, col = (">", "max", "price_max") if dir == "buy" else ("<", "min", "price_min")
+    rows = q(f"""WITH t AS (SELECT * FROM ic_trade WHERE {where} AND volume {sign} 0 AND cost <> 0),
+                 h AS (SELECT settlement_date, sp, {best}({col}) AS m FROM t GROUP BY 1, 2)
+                 SELECT t.ic AS ic, t.party AS party, {IC_DIMS["kind"]} AS kind, {IC_DIMS["so"]} AS so,
+                        sum(t.volume) AS vol, sum(t.cost) AS cost, max(t.price_max) AS price_max, min(t.price_min) AS price_min,
+                        sum(t.n) AS n_trades, count(*) AS n_hh, sum(CASE WHEN t.{col} = h.m THEN 1 ELSE 0 END) AS n_marginal
+                 FROM t JOIN h ON t.settlement_date = h.settlement_date AND t.sp = h.sp
+                 GROUP BY 1, 2, 3, 4 ORDER BY {"price_max DESC" if dir == "buy" else "price_min ASC"}, 1, 2, 3, 4""", params)
+    return {"rows": rows}
+
+
 @app.get("/api/ic/flow")
 def ic_flow(start: date = Query(alias="from"), end: date = Query(alias="to"), bucket: str = "day", ic: str | None = None):
     """Physical flow per link and time bucket (MW, positive = import into GB)."""

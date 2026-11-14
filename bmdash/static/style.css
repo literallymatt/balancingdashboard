@@ -172,3 +172,5 @@ button.btn.small { padding: 3px 10px; font-size: 12px; }
 .replay-status { font-size: 13px; line-height: 1.5; color: var(--ink2); min-height: 6.2em; margin-bottom: 4px; }
 .replay-status b { color: var(--ink); }
 @media (max-width: 700px) { .replay-status { min-height: 8.4em; } }
+.kpi.click { cursor: pointer; }
+.kpi.click:hover { border-color: var(--axis); }
