@@ -136,7 +136,7 @@ SQLite (see "What is stored" below).
   except the second 01:00-01:59 on the autumn clock change. Fetched with the Total costs data (`bmdash costs`, the
   end of `bmdash ingest`, or the Refresh button): the first backfill from April 2025 is about 365k half-hours and
   two minutes, later refreshes re-fetch the current month. Stored in `data/constraint_hh.parquet` (phone: the
-  `constraint_hh` table, about 15 MB for the backfill). The actual BM actions NESO took for constraints carry the
+  `constraint_hh` table, about 12 MB for the backfill). The actual BM actions NESO took for constraints carry the
   SO flag; the tab links to the Overview filtered to them, split by technology and unit.
 - **Instruction replay**: on a unit's page, the Day detail card can replay NESO's instructions
   for the day in the order they were issued (play, pause, step, slider), showing the unit's plan
