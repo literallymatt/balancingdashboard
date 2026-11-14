@@ -64,6 +64,7 @@ class MainActivity : Activity() {
     /** On launch, top up the last 30 days: fetches only days that are missing or were fetched before they settled. */
     private fun refreshDataIfStale() {
         Thread {
+            runCatching { Backend.refreshCosts() } // system-level cost data: independent of the unit data below
             try {
                 val end = Ingester.today()
                 val start = end.minusDays(Backend.DEFAULT_DAYS - 1L)

@@ -12,7 +12,9 @@ class HttpError(val status: Int, message: String) : Exception(message)
  * response shapes, so the web front end runs unchanged against either backend.
  */
 class Api(private val db: SqlDb, private val control: IngestControl, private val debug: DebugSampler? = null,
-          private val appVersion: String? = null) {
+          private val appVersion: String? = null,
+          private val costs: CostIngester? = null,
+          private val startCosts: (() -> Unit)? = null) {
 
     /** Returns null when the path is not an API route. */
     fun handle(method: String, path: String, queryString: String?): Response? {
@@ -39,6 +41,8 @@ class Api(private val db: SqlDb, private val control: IngestControl, private val
         r == "prices" -> prices(date(p, "from"), date(p, "to"), p["bucket"] ?: "day")
         r == "bsad" -> bsad(date(p, "from"), date(p, "to"), p["bucket"] ?: "day")
         r == "ingest" -> control.status()
+        r == "costs/monthly" -> costsMonthly(p["from"], p["to"])
+        r == "costs/refresh" -> { startCosts?.invoke() ?: throw HttpError(404, "Not Found"); mapOf("running" to true) }
         r == "version" -> appVersion?.let { mapOf("version" to it) } ?: throw HttpError(404, "Not Found")
         r == "debug" -> debug?.let { it.ensureRunning(); it.snapshot() } ?: throw HttpError(404, "Not Found")
         r == "ingest/start" -> startIngest(p)
@@ -265,6 +269,41 @@ class Api(private val db: SqlDb, private val control: IngestControl, private val
             "acceptances" to live["acceptances"], "periods" to per)
     }
 
+    /** Monthly balancing costs by source and by purpose, over the days NESO has fully published (mirrors api.py). */
+    private fun costsMonthly(from: String?, to: String?): Any {
+        val lo = from ?: "2000-01-01"; val hi = to ?: "2100-01-01"
+        val rows = db.query(
+            """WITH ok AS (SELECT date FROM cost_daily WHERE source = 'neso_purpose' AND category = '_n' AND amount >= ?)
+               SELECT substr(date, 1, 7) AS m, source, category, sum(amount) AS v, count(DISTINCT date) AS n
+               FROM cost_daily WHERE date BETWEEN ? AND ? AND (source = 'eac' OR date IN (SELECT date FROM ok))
+               GROUP BY 1, 2, 3""", listOf(MIN_PERIODS, lo, hi))
+        val months = java.util.TreeMap<String, LinkedHashMap<String, Any?>>()
+        for (r in rows) {
+            val m = months.getOrPut(r["m"] as String) {
+                linkedMapOf("month" to r["m"], "days" to 0L, "purpose" to LinkedHashMap<String, Any?>(), "bsad" to LinkedHashMap<String, Any?>(), "eac" to LinkedHashMap<String, Any?>())
+            }
+            @Suppress("UNCHECKED_CAST")
+            when (r["source"]) {
+                "neso_purpose" -> if (r["category"] == "_n") m["days"] = r["n"] else (m["purpose"] as MutableMap<String, Any?>)[r["category"] as String] = r["v"]
+                "bsad" -> (m["bsad"] as MutableMap<String, Any?>)[r["category"] as String] = r["v"]
+                else -> (m["eac"] as MutableMap<String, Any?>)[r["category"] as String] = r["v"]
+            }
+        }
+        val out = ArrayList<Map<String, Any?>>()
+        for ((key, m) in months) {
+            val first = LocalDate.parse("$key-01")
+            val cal = first.lengthOfMonth()
+            fun total(k: String): Double { @Suppress("UNCHECKED_CAST") return (m[k] as Map<String, Any?>).values.sumOf { (it as? Number)?.toDouble() ?: 0.0 } }
+            m["calendar_days"] = cal.toLong()
+            m["neso_total"] = total("purpose"); m["bsad_total"] = total("bsad"); m["eac_total"] = total("eac")
+            m["bm_derived"] = (m["neso_total"] as Double) - (m["bsad_total"] as Double)
+            m["partial"] = (m["days"] as Number).toLong() < cal
+            out.add(m)
+        }
+        val through = db.query("SELECT max(date) AS d FROM cost_daily WHERE source = 'neso_purpose' AND category = '_n' AND amount >= ?", listOf(MIN_PERIODS))[0]["d"]
+        return linkedMapOf<String, Any?>("months" to out, "through" to through) + (costs?.status() ?: emptyMap())
+    }
+
     private fun startIngest(p: Map<String, String>): Any {
         val a = LocalDate.parse(req(p, "start")); val b = LocalDate.parse(req(p, "end"))
         if (b.isBefore(a) || java.time.temporal.ChronoUnit.DAYS.between(a, b) > 3 * 366)
@@ -313,6 +352,8 @@ class Api(private val db: SqlDb, private val control: IngestControl, private val
                    coalesce(u.gsp_group, 'Transmission / n.a.') AS gsp,
                    coalesce(u.name, b.bm_unit) AS unit_name
             FROM boav b LEFT JOIN units u ON u.bm_unit = b.bm_unit"""
+
+        private const val MIN_PERIODS = 44 // a NESO day counts as published once it has most of its 46-50 settlement periods
 
         private val DATE_RE = Regex("^\\d{4}-\\d{2}-\\d{2}$")
 

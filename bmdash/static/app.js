@@ -502,6 +502,13 @@ const GLOSS = {
   dbgpower: ['Power draw', 'Estimated power the whole phone is drawing from the battery right now (current × voltage). The screen and mobile radio are included, not just this app.'],
   dbgnet: ['Downloaded', 'Data this app has downloaded since the debug sampler started. Mobile radio activity is a big part of heat, so a large number here matters.'],
   replay: ['Replaying the instructions', 'NESO can send a unit a new instruction while an earlier one is still running or waiting to start. The newest instruction takes over for the times it covers, and when an instruction ends the unit goes back to its own plan (PN). This replays the day\'s acceptances in the order they were issued so you can watch the instructed output change. Played back this way, they reproduce the energy Elexon settles for the unit.'],
+  costs: ['Total balancing costs', 'What it costs NESO each month to keep the grid balanced and secure, as system-level totals: there is no unit or asset behind these figures, so they sit apart from the unit-based tabs. See the notes below the chart for what is and is not included.'],
+  costview: ['By source / By purpose', '"By source" shows where the money was spent (the Balancing Mechanism, non-BM actions, response and reserve availability). "By purpose" uses NESO\'s own tag for what each action was for, such as constraints or reserve. The two views cover different things, so their totals differ.'],
+  bmderived: ['Balancing Mechanism (derived)', 'NESO\'s daily balancing cost total minus the non-BM actions (BSAD). NESO\'s total covers BM actions plus non-BM actions, and this difference matches the unit-level BM cashflows in the other tabs to within about 1% on the days we hold.'],
+  bsadsrc: ['Non-BM actions (BSAD)', 'Trades and system actions NESO takes outside the Balancing Mechanism and reports to Elexon as Balancing Services Adjustment Data. Split here into energy trades and system actions.'],
+  eac: ['Response and reserve availability (EAC)', 'Availability payments for frequency response (DC, DM, DR) and reserve (QR, SR, BR), bought in NESO\'s daily EAC auctions: cleared MW x clearing price x hours. This is only part of NESO\'s ancillary services, and it is not part of the BM or non-BM totals.'],
+  purposes: ['Purposes', 'NESO tags each balancing action with its main reason. Constraints are network limits (for example moving power around a congested line); energy imbalance, positive and negative reserve cover the national supply and demand balance; frequency control keeps the grid at 50 Hz. Tagging is best-endeavours.'],
+  partialmonth: ['Partial months', 'NESO publishes its daily cost data with a lag of a few days, and a day only counts once most of its settlement periods are in. A faded bar is a month where some days are not yet published, so it is lower than the full month will be.'],
   amendment: ['Amendment', 'Whether the record is the original acceptance (ORI) or a later change to an earlier one, for example an update or deletion.'],
 };
 const tip = (k) => (GLOSS[k] ? `<button type="button" class="info" data-tip="${k}" aria-label="What does ${esc(GLOSS[k][0])} mean?">i</button>` : '');
@@ -864,6 +871,130 @@ function replay(el, d) {
   draw();
 }
 
+
+// ------------------------------------------------------------------ total costs (system-level, no unit detail)
+
+const COST_LABEL = {
+  bm_derived: 'Balancing Mechanism (derived)', bsad_total: 'Non-BM actions (BSAD)', eac_total: 'Response and reserve availability (EAC)',
+  constraints: 'Constraints', energy_imbalance: 'Energy imbalance', positive_reserve: 'Positive reserve', negative_reserve: 'Negative reserve',
+  frequency_control: 'Frequency control', other: 'Other',
+};
+const COST_COLOUR = { bm_derived: '--s1', bsad_total: '--s7', eac_total: '--s4', constraints: '--s1', energy_imbalance: '--s3', positive_reserve: '--s2',
+  negative_reserve: '--s5', frequency_control: '--s7', other: '--other' };
+let costView = 'source', costRange = '12';
+const COST_SHORT = { bm_derived: 'BM (derived)', bsad_total: 'Non-BM (BSAD)', eac_total: 'EAC availability' };
+
+async function viewCosts(main) {
+  main.innerHTML = `
+  <div class="grid kpis" id="costKpis"></div>
+  <div class="card">
+    <div class="card-head">
+      <div><h2>Total balancing costs by month${tip('costs')}</h2><div class="sub" id="costNote"></div></div>
+      <div class="controls">
+        <label class="small muted">View ${select('costView', [['source', 'By source'], ['purpose', 'By purpose']], costView)}${tip('costview')}</label>
+        <label class="small muted">Months ${select('costRange', [['12', 'Last 12'], ['all', 'All']], costRange)}</label>
+        <button type="button" class="btn" id="costRefresh">Refresh data</button>
+      </div>
+    </div>
+    <div class="chart tall" id="costChart"></div>
+    <div id="costTable"></div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <h2>What is and is not included</h2>
+    <div class="small muted" style="line-height:1.55;margin-top:6px">
+      <b style="color:var(--ink)">By source</b> adds the Balancing Mechanism (NESO's daily total minus non-BM actions), non-BM actions (Elexon BSAD) and response and reserve availability (EAC auctions).<br>
+      <b style="color:var(--ink)">By purpose</b> is NESO's own split of the same daily total by what each action was for.<br>
+      <b style="color:var(--ink)">Not included:</b> other ancillary services (reactive power, black start, stability and voltage contracts, reserve delivery), SO-SO trades with other system operators, and reconciliation adjustments. I could not find a public monthly figure for these, so NESO's own all-in monthly totals will be higher than these bars.<br>
+      <b style="color:var(--ink)">Lag:</b> NESO publishes the daily cost data a few days late, so the latest month is usually partial (shown faded).
+    </div>
+    <div class="small muted" id="costMeta" style="margin-top:8px"></div>
+  </div>`;
+  $('#costView').onchange = (e) => { costView = e.target.value; drawCosts(); };
+  $('#costRange').onchange = (e) => { costRange = e.target.value; drawCosts(); };
+  $('#costRefresh').onclick = async () => {
+    const btn = $('#costRefresh'); btn.disabled = true; btn.textContent = 'Refreshing…';
+    try {
+      await fetch('/api/costs/refresh');
+      for (let i = 0; i < 90; i++) { await new Promise((r) => setTimeout(r, 2000)); const d = await (await fetch('/api/costs/monthly')).json(); if (!d.running) break; }
+    } finally { btn.disabled = false; btn.textContent = 'Refresh data'; }
+    await loadCosts();
+  };
+  await loadCosts();
+}
+
+let costData = null;
+async function loadCosts() {
+  const el = $('#costChart');
+  if (!el) return;
+  costData = await api('costs/monthly');
+  drawCosts();
+}
+
+function drawCosts() {
+  if (!$('#costChart')) return;
+  const d = costData, allMonths = d.months || [];
+  // Last 12 months by default (as NESO's own chart does); a partial current month rides along as a 13th bar.
+  const months = costRange === 'all' || !allMonths.length ? allMonths : allMonths.slice(-(allMonths[allMonths.length - 1].partial ? 13 : 12));
+  const keys = costView === 'source' ? ['bm_derived', 'bsad_total', 'eac_total'] : ['constraints', 'energy_imbalance', 'positive_reserve', 'negative_reserve', 'frequency_control', 'other'];
+  const val = (m, k) => (costView === 'source' ? m[k] : (m.purpose[k] ?? 0)) ?? 0;
+  const total = (m) => keys.reduce((a, k) => a + val(m, k), 0);
+  const lbl = (m) => new Date(`${m.month}-01T00:00:00Z`).toLocaleDateString('en-GB', { month: 'short', year: '2-digit', timeZone: 'UTC' });
+  const upd = d.updated_at ? new Date(d.updated_at * 1000).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : null;
+  $('#costMeta').textContent = allMonths.length
+    ? `NESO daily cost data published through ${d.through || 'n/a'}${upd ? ` · refreshed ${upd}` : ''}${d.error ? ` · some sources failed: ${d.error}` : ''}`
+    : '';
+  if (!allMonths.length) {
+    $('#costChart').innerHTML = `<div class="empty">No cost data yet. Tap <b>Refresh data</b> to download it (about a minute).${d.error ? `<br>${esc(d.error)}` : ''}</div>`;
+    charts.delete($('#costChart')); $('#costTable').innerHTML = ''; $('#costKpis').innerHTML = ''; $('#costNote').textContent = '';
+    return;
+  }
+  $('#costNote').textContent = costView === 'source'
+    ? 'Where the money was spent. Faded bars are months NESO has not fully published yet.'
+    : 'What NESO tagged each action as being for (covers the BM and non-BM actions, not the EAC auctions). Faded bars are partial months.';
+
+  // KPIs over complete months
+  const full = allMonths.filter((m) => !m.partial);
+  const last = full[full.length - 1], prev = full[full.length - 2];
+  const t12 = full.slice(-12);
+  const sum12 = (f) => t12.reduce((a, m) => a + f(m), 0);
+  const cons12 = sum12((m) => m.purpose.constraints ?? 0), neso12 = sum12((m) => m.neso_total);
+  const kp = [];
+  if (last) {
+    const tl = total(last), tp = prev ? total(prev) : null;
+    kp.push(kpi(`${lbl(last)} total`, gbp(tl), tp ? `${tl >= tp ? '+' : '−'}${nf(0).format(Math.abs(100 * (tl - tp) / tp))}% on ${lbl(prev)}` : 'latest full month', 'costs'));
+    kp.push(kpi(`Last ${t12.length} full months`, gbp(sum12(total)), `${gbp(sum12(total) / t12.length)} a month on average`));
+    kp.push(kpi('Share that was constraints', neso12 ? `${nf(0).format(100 * cons12 / neso12)}%` : '–', 'of the BM plus non-BM total, same period', 'purposes'));
+  }
+  $('#costKpis').innerHTML = kp.join('');
+
+  const o = baseOption();
+  o.legend = { ...o.legend, type: 'plain', itemGap: 10, textStyle: { color: css('--ink2'), fontSize: 11 }, data: keys.map((k) => COST_LABEL[k]) };
+  o.grid = { left: 8, right: 12, top: 62, bottom: 8, containLabel: true };
+  o.xAxis = { ...o.xAxis, type: 'category', data: months.map(lbl), axisLabel: { color: css('--muted'), fontSize: 11, hideOverlap: true } };
+  o.yAxis = { ...o.yAxis, type: 'value', axisLabel: { ...o.yAxis.axisLabel, formatter: (v) => gbp(v) } };
+  o.tooltip = { ...o.tooltip, formatter: (ps) => {
+    const m = months[ps[0].dataIndex];
+    const rows = ps.filter((p) => p.seriesName !== 'Total').map((p) => ({ name: p.seriesName, value: p.value?.value ?? p.value, color: p.color }));
+    return tipHtml(`${lbl(m)}${m.partial ? ` · ${m.days} of ${m.calendar_days} days published` : ''}`, rows, gbp, total(m));
+  } };
+  o.series = [
+    ...keys.map((k) => ({ name: COST_LABEL[k], type: 'bar', stack: 'cost', barMaxWidth: 34, color: css(COST_COLOUR[k]),
+      data: months.map((m) => ({ value: val(m, k), itemStyle: { opacity: m.partial ? 0.45 : 1 } })) })),
+    // An invisible zero-height bar on top of each stack carries the month's total as its label.
+    { name: 'Total', type: 'bar', stack: 'cost', data: months.map(() => 0), itemStyle: { color: 'transparent' }, tooltip: { show: false }, silent: true,
+      label: { show: true, position: 'top', color: css('--ink'), fontSize: 10, formatter: (p) => { const v = total(months[p.dataIndex]); return Math.abs(v) >= 1e8 ? `£${nf(0).format(v / 1e6)}m` : gbp(v); } },
+      labelLayout: { hideOverlap: true } },
+  ];
+  chart($('#costChart')).setOption(o, true);
+
+  const cols = [{ key: 'label', label: 'Month' }, ...keys.map((k) => ({ key: k, label: COST_SHORT[k] || COST_LABEL[k], num: true, fmt: (v) => gbp(v),
+    tip: k === 'bm_derived' ? 'bmderived' : k === 'bsad_total' ? 'bsadsrc' : k === 'eac_total' ? 'eac' : undefined })),
+    { key: 'total', label: 'Total', num: true, fmt: (v) => gbp(v) }, { key: 'days', label: 'Days', num: true, tip: 'partialmonth' }];
+  const rows = months.map((m) => ({ ...Object.fromEntries(keys.map((k) => [k, val(m, k)])), key: m.month, label: lbl(m) + (m.partial ? ' (partial)' : ''),
+    total: total(m), days: `${m.days}/${m.calendar_days}` })).reverse();
+  table($('#costTable'), cols, rows, { limit: 40 });
+}
+
 // ------------------------------------------------------------------ data / ingest view
 
 let pollTimer = null;
@@ -1070,18 +1201,20 @@ function drawFilterBar() {
 
 async function render() {
   readHash();
-  if (!META.days.length && state.view !== 'data') { state.view = 'data'; }
+  if (!META.days.length && state.view !== 'data' && state.view !== 'costs') { state.view = 'data'; }
   if (META.days.length) {
     if (!state.to || state.to > META.max) state.to = META.max;
     if (!state.from || state.from > state.to) state.from = addDays(state.to, -29) < META.min ? META.min : addDays(state.to, -29);
   }
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.view === (state.view === 'unit' ? 'units' : state.view)));
-  $('#filterbar').hidden = state.view === 'data';
-  if (state.view !== 'data') drawFilterBar();
+  const noFilters = state.view === 'data' || state.view === 'costs';
+  $('#filterbar').hidden = noFilters;
+  if (!noFilters) drawFilterBar();
   const main = $('#main');
   try {
     if (state.view === 'units') await viewUnits(main);
     else if (state.view === 'unit') await viewUnit(main);
+    else if (state.view === 'costs') await viewCosts(main);
     else if (state.view === 'data') await viewData(main);
     else viewOverview(main);
   } catch (e) { console.error(e); main.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }

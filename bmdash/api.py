@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import ingest, store
+from . import costs, ingest, store
 from .elexon import Elexon
 
 STATIC = Path(__file__).parent / "static"
@@ -261,6 +261,68 @@ def bsad(start: date = Query(alias="from"), end: date = Query(alias="to"), bucke
                  sum(cost) AS cost, sum(volume) AS volume
                  FROM disbsad WHERE settlement_date BETWEEN ? AND ? GROUP BY ALL ORDER BY t""", [start, end])
     return {"rows": _clean(rows)}
+
+
+# ---------------------------------------------------------------- total costs (system-level, no unit detail)
+
+MIN_PERIODS = 44  # a NESO day counts as published once it has most of its 46-50 settlement periods
+
+
+@app.get("/api/costs/monthly")
+def costs_monthly(start: date | None = Query(None, alias="from"), end: date | None = Query(None, alias="to")):
+    """Monthly balancing costs by source and by purpose, over the days NESO has fully published.
+
+    BM cost is derived as NESO's total (BM + non-BM actions) minus BSAD, which matches unit-level Elexon BM
+    cashflows to within about 1% on complete days."""
+    lo, hi = start or date(2000, 1, 1), end or date(2100, 1, 1)
+    rows = q("""WITH ok AS (SELECT date FROM cost_daily WHERE source = 'neso_purpose' AND category = '_n' AND amount >= ?)
+                SELECT strftime(date, '%Y-%m') AS m, source, category, sum(amount) AS v, count(DISTINCT date) AS n
+                FROM cost_daily WHERE date BETWEEN ? AND ? AND (source = 'eac' OR date IN (SELECT date FROM ok))
+                GROUP BY ALL""", [MIN_PERIODS, lo, hi])
+    months: dict[str, dict] = {}
+    for r in rows:
+        m = months.setdefault(r["m"], {"month": r["m"], "days": 0, "purpose": {}, "bsad": {}, "eac": {}})
+        if r["source"] == "neso_purpose":
+            if r["category"] == "_n":
+                m["days"] = r["n"]
+            else:
+                m["purpose"][r["category"]] = r["v"]
+        elif r["source"] == "bsad":
+            m["bsad"][r["category"]] = r["v"]
+        else:
+            m["eac"][r["category"]] = r["v"]
+    out = []
+    for key in sorted(months):
+        m = months[key]
+        y, mo = int(key[:4]), int(key[5:7])
+        m["calendar_days"] = (date(y + (mo == 12), mo % 12 + 1, 1) - date(y, mo, 1)).days
+        m["neso_total"] = sum(m["purpose"].values())
+        m["bsad_total"] = sum(m["bsad"].values())
+        m["eac_total"] = sum(m["eac"].values())
+        m["bm_derived"] = m["neso_total"] - m["bsad_total"]
+        m["partial"] = m["days"] < m["calendar_days"]
+        out.append(m)
+    through = q("SELECT max(date) AS d FROM cost_daily WHERE source = 'neso_purpose' AND category = '_n' AND amount >= ?", [MIN_PERIODS])[0]["d"]
+    return {"months": out, "through": through.isoformat() if through else None, **costs.status(), "running": COSTS_JOB["running"]}
+
+
+COSTS_JOB = {"running": False}
+
+
+def _run_costs():
+    try:
+        costs.ingest_costs()
+    finally:
+        COSTS_JOB["running"] = False
+
+
+@app.get("/api/costs/refresh")
+def costs_refresh():
+    """Re-fetch the cost sources in the background (idempotent; one run at a time)."""
+    if not COSTS_JOB["running"]:
+        COSTS_JOB["running"] = True
+        threading.Thread(target=_run_costs, daemon=True).start()
+    return {"running": True}
 
 
 # ---------------------------------------------------------------- on-demand unit day detail

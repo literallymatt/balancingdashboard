@@ -100,30 +100,38 @@ class JsonReader(private val r: Reader) {
         if (c != ch.code) throw IOException("Bad JSON: expected '$ch' but found ${if (c < 0) "end of input" else "'${c.toChar()}'"}")
     }
 
-    /** Stream the records of a top-level array, or of the `data` array inside a top-level object. */
-    fun streamRecords(onRecord: (Map<String, Any?>) -> Unit) {
+    /**
+     * Stream the records of a top-level array, or of the array found by following [path] through nested objects
+     * (Elexon wraps records in `data`; NESO's portal in `result.records`).
+     */
+    fun streamRecords(path: List<String> = listOf("data"), onRecord: (Map<String, Any?>) -> Unit) {
         dropNestedZeros = true
         skipWs()
         when (peek()) {
             '['.code -> streamArray(onRecord)
-            '{'.code -> {
-                pos++
-                skipWs()
-                if (peek() == '}'.code) { pos++; return }
-                while (true) {
-                    skipWs()
-                    val key = readString()
-                    expect(':')
-                    skipWs()
-                    if (key == "data" && peek() == '['.code) streamArray(onRecord) else readValue()
-                    skipWs()
-                    val c = next()
-                    if (c == ','.code) continue
-                    if (c == '}'.code) break
-                    throw IOException("Bad JSON in object")
-                }
-            }
+            '{'.code -> streamObject(path, 0, onRecord)
             else -> throw IOException("Bad JSON: expected array or object")
+        }
+    }
+
+    private fun streamObject(path: List<String>, level: Int, onRecord: (Map<String, Any?>) -> Unit) {
+        expect('{')
+        skipWs()
+        if (peek() == '}'.code) { pos++; return }
+        while (true) {
+            skipWs()
+            val key = readString()
+            expect(':')
+            skipWs()
+            if (key == path[level]) {
+                if (level == path.size - 1) { if (peek() == '['.code) streamArray(onRecord) else readValue() }
+                else if (peek() == '{'.code) streamObject(path, level + 1, onRecord) else readValue()
+            } else readValue()
+            skipWs()
+            val c = next()
+            if (c == ','.code) continue
+            if (c == '}'.code) return
+            throw IOException("Bad JSON in object")
         }
     }
 

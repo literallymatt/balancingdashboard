@@ -3,6 +3,7 @@ package app.bmdash
 import android.content.Context
 import android.content.Intent
 import bmdash.Api
+import bmdash.CostIngester
 import bmdash.DebugSampler
 import bmdash.IngestControl
 import bmdash.Ingester
@@ -22,6 +23,7 @@ object Backend {
     lateinit var ingester: Ingester
     lateinit var api: Api
     lateinit var debug: DebugSampler
+    lateinit var costs: CostIngester
 
     @Synchronized
     fun init(ctx: Context) {
@@ -44,8 +46,18 @@ object Backend {
         val probe = AndroidProbe(app)
         debug = DebugSampler({ probe.read() }, control)
         val version = runCatching { app.packageManager.getPackageInfo(app.packageName, 0).versionName }.getOrNull()
-        api = Api(db, control, debug, version)
+        costs = CostIngester(db)
+        api = Api(db, control, debug, version, costs) { refreshCosts(force = true) }
         started = true
+    }
+
+    /** Refresh the system-level cost data (Total costs tab) in the background if it is older than 12 hours. */
+    fun refreshCosts(force: Boolean = false) {
+        if (costs.running) return
+        val updated = costs.status()["updated_at"] as? Double
+        if (!force && updated != null && System.currentTimeMillis() / 1000.0 - updated < 12 * 3600) return
+        Thread { Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND); costs.run() }
+            .apply { name = "bmdash-costs"; isDaemon = true; start() }
     }
 
     @Synchronized
