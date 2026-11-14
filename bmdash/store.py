@@ -133,7 +133,28 @@ def coverage() -> dict[str, float]:
     return out
 
 
+def raise_fd_limit(target: int = 10240) -> None:
+    """Raise this process's soft open-file limit.
+
+    Every query reads one Parquet file per held day per table, and macOS defaults to only 256 open files
+    per process, so a few months of data and several concurrent queries fail with
+    "IO Error: Cannot open file ...: Too many open files". The hard limit is normally far higher.
+    """
+    try:
+        import resource
+    except ImportError:  # Windows has no such limit
+        return
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    want = target if hard == resource.RLIM_INFINITY else min(target, hard)
+    if soft < want:
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (want, hard))
+        except (ValueError, OSError):
+            pass
+
+
 def connect() -> duckdb.DuckDBPyConnection:
+    raise_fd_limit()
     ensure_layout()
     con = duckdb.connect(":memory:")
     for name in DAILY:

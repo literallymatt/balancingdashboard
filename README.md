@@ -33,6 +33,9 @@ versions that match `pyproject.toml`.
 ### Options
 
 `bmdash ingest --from 2025-01-01 --to 2025-12-31` fetches an explicit range; `--force` re-fetches.
+The server raises its own open-file limit at start-up and runs at most two queries at a time, because every
+query reads one Parquet file per held day (macOS allows only 256 open files by default, which otherwise gives
+"IO Error: ... Too many open files" once a few months are held).
 The Data tab in the dashboard can start the same fetch and shows coverage.
 
 ## How it works
