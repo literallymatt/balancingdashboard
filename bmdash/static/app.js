@@ -14,7 +14,7 @@ const DIM_LABEL = { direction: 'Direction', tech: 'Technology', fuel: 'Fuel type
   unit: 'BM unit', unit_type: 'BMU type', gsp: 'GSP group', pair: 'Bid-offer pair', so: 'SO flag' };
 const DIMS = Object.keys(DIM_LABEL);
 const state = { view: 'overview', unit: null, from: null, to: null, bucket: 'auto',
-  metric: 'net', split: 'tech', bdim: 'party', filters: {}, day: null, bnd: null, cmetric: 'bind', cview: 'boundary' };
+  metric: 'net', split: 'tech', bdim: 'party', filters: {}, day: null, bnd: null, cmetric: 'bind', cview: 'boundary', rkind: 'production', rsplit: 'gsp', rt: null, rgsp: null, rlong: null };
 let META = { days: [] };
 
 function readHash() {
@@ -24,7 +24,7 @@ function readHash() {
   state.unit = state.view === 'unit' ? decodeURIComponent(parts[1] || '') : null;
   const unitView = state.view === 'unit';
   Object.assign(state, { bucket: 'auto', metric: 'net', split: unitView ? 'direction' : 'tech', bdim: unitView ? 'pair' : 'party', day: null,
-    bnd: null, cmetric: 'bind', cview: 'boundary' });
+    bnd: null, cmetric: 'bind', cview: 'boundary', rkind: 'production', rsplit: 'gsp', rt: null, rgsp: null, rlong: null });
   const p = new URLSearchParams(qs || '');
   state.filters = {};
   for (const [k, v] of p) {
@@ -38,6 +38,7 @@ function writeHash(replace = false) {
   for (const k of ['from', 'to', 'bucket', 'metric', 'split', 'bdim']) if (state[k]) p.set(k, state[k]);
   if (state.view === 'unit' && state.day) p.set('day', state.day);
   if (state.view === 'constraints') for (const k of ['bnd', 'cmetric', 'cview']) if (state[k]) p.set(k, state[k]);
+  if (state.view === 'remit') for (const k of ['rkind', 'rsplit', 'rt', 'rgsp', 'rlong']) if (state[k]) p.set(k, state[k]);
   for (const [k, v] of Object.entries(state.filters)) if (v.length) p.set('f.' + k, v.join('|'));
   const path = state.view === 'unit' ? `unit/${encodeURIComponent(state.unit)}` : state.view;
   const h = `#/${path}?${p}`;
@@ -535,6 +536,13 @@ const GLOSS = {
   dayahead: ['Day-ahead forecast', 'NESO publishes, for each boundary, the limit and forecast flow for every half-hour of the next day. They are a snapshot taken the day before and are not updated afterwards, so they show where NESO expected trouble rather than metered flows. The latest day is usually tomorrow.'],
   constraintcost: ['Constraint costs', 'What NESO spent on constraint actions, per day, from its own published outturn. "Thermal cost" is broken down for NESO\'s main boundary groups, which are coarser than the boundaries on the map (for example SSE-SP covers SSE_SP2). Published per day, a few days late.'],
   reasons: ['Reasons for constraint actions', 'NESO splits its constraint costs by reason. Thermal: a line would overheat (the boundaries on this tab). Voltage: keeping voltage within limits in an area. System inertia: keeping enough spinning machines on to steady frequency. Largest loss: limiting the biggest single source that could trip.'],
+  remit: ['REMIT outages', 'Under the REMIT rules, the owner of a generator or large demand site must publish any planned or unplanned change of 100 MW or more to what it can deliver, as soon as it knows. This tab adds those messages up to show how much capacity was unavailable, when, and in which part of the country.'],
+  unavail: ['Unavailable capacity', 'A unit\'s normal capacity minus the capacity its REMIT message says is still available, averaged over the period (MW). An outage covering half of a period counts half. Planned outages are published ahead, so periods after today show what is already known to be coming.'],
+  gspgroup: ['GSP groups', 'Great Britain\'s 14 distribution network regions, named after the Grid Supply Points through which each takes power from the transmission network. Elexon uses them to settle the market by region. A transmission-connected power station is shown in the region it sits in. The map\'s colour scale stays the same as you move through time, so periods can be compared.'],
+  remitplace: ['Placing units in regions', 'Elexon\'s reference data names a GSP group for embedded units but not for transmission-connected ones. Elexon does set each unit\'s transmission loss factor by GSP-group zone, though, so units sharing a loss factor sit in the same zone: matching a unit\'s loss factor to those of units whose group is known places virtually all the capacity in REMIT, apart from some closed stations no longer in Elexon\'s list. Units that cannot be placed are counted as "not placed".'],
+  remitadd: ['Overlapping messages', 'A unit can have more than one live message for the same time, for example a planned outage and a separate unplanned extension. Adding them would count the same megawatts twice, so the larger one counts. Only each message\'s latest revision is used, and messages the participant withdrew are left out.'],
+  closures: ['Closures', 'Closed and mothballed stations often stay in REMIT as an "outage" with no real end, some running to 2050. Left in, they would add over 10 GW of retired plant to every period, so events longer than a year are hidden unless this is ticked.'],
+  planned: ['Planned or unplanned', 'Each REMIT message says whether the outage was planned (maintenance, known in advance) or unplanned (a breakdown or trip). The unplanned share is the unplanned MW as a share of all unavailable MW, averaged over the range.'],
   amendment: ['Amendment', 'Whether the record is the original acceptance (ORI) or a later change to an earlier one, for example an update or deletion.'],
 };
 const tip = (k) => (GLOSS[k] ? `<button type="button" class="info" data-tip="${k}" aria-label="What does ${esc(GLOSS[k][0])} mean?" title="Click for what ${esc(GLOSS[k][0])} means">i</button>` : '');
@@ -1195,7 +1203,7 @@ async function viewConstraints(main) {
   loading($('#conCosts'), () => conCosts($('#conCosts'), $('#conCostsTable'), bucket));
 }
 
-function wireConRefresh() {
+function wireConRefresh() {  // one refresh fetches the costs, constraints and REMIT data
   const btn = $('#conRefresh');
   if (!btn) return;
   btn.onclick = async () => {
@@ -1204,7 +1212,7 @@ function wireConRefresh() {
       await fetch('/api/costs/refresh');
       for (let i = 0; i < 120; i++) { await new Promise((r) => setTimeout(r, 2000)); const d = await api('constraints/meta'); if (!d.running) break; }
     } finally { btn.disabled = false; btn.textContent = 'Refresh data'; }
-    await loadCMeta();
+    await Promise.all([loadCMeta(), loadRMeta()].map((p) => p.catch((e) => console.error(e))));
     render();
   };
 }
@@ -1403,6 +1411,240 @@ async function conCosts(el, tableEl, bucket) {
     { key: 'total', label: 'Total', num: true, fmt: (v) => gbp(v) }], trows, { limit: 400 });
 }
 
+// ------------------------------------------------------------------ REMIT outages (unavailable capacity by GSP group)
+
+// GSP groups (Elexon ids) in the order the map and tables list them: north to south.
+const GSP_ORDER = ['_P', '_N', '_F', '_G', '_M', '_D', '_B', '_E', '_A', '_K', '_C', '_J', '_H', '_L'];
+const GSP_NAME = { _A: 'East England', _B: 'East Midlands', _C: 'London', _D: 'Merseyside and North Wales', _E: 'West Midlands',
+  _F: 'North East England', _G: 'North West England', _H: 'Southern England', _J: 'South East England', _K: 'South Wales',
+  _L: 'South West England', _M: 'Yorkshire', _N: 'South and Central Scotland', _P: 'North Scotland', Unknown: 'Not placed' };
+const gspName = (g) => GSP_NAME[g] || g;
+// REMIT fuel types, coloured like the technologies elsewhere in the dashboard.
+const RFUEL_COLOUR = [[/gas/i, '--s1'], [/interconn/i, '--s2'], [/wind onshore/i, '--s6'], [/wind/i, '--s3'], [/pumped/i, '--s4'], [/biomass/i, '--s5'],
+  [/hydro/i, '--s6'], [/storage|batter/i, '--s7'], [/nuclear/i, '--s8'], [/coal/i, '--other2']];
+const RKINDS = [['production', 'Generation'], ['consumption', 'Demand (consumption)']];
+const RSPLITS = [['gsp', 'GSP group'], ['fuel', 'Fuel type'], ['type', 'Planned or unplanned']];
+const mwc = (v) => (v == null || !isFinite(v) ? '–' : Math.abs(v) >= 1000 ? `${nf(1).format(v / 1000)} GW` : `${nf(0).format(v)} MW`);
+let RMETA = { min: null, max: null }, GSP_MAP = null, remitTimer = null;
+
+async function loadRMeta() { RMETA = await api('remit/meta'); }
+
+function rcolour(split, g, rank) {
+  if (g === 'Other (rest)' || g === 'Unknown') return css('--other');
+  if (split === 'type') return css(g === 'Planned' ? '--s1' : '--s2');
+  if (split === 'fuel') return css(RFUEL_COLOUR.find(([re]) => re.test(g))?.[1] || '--other2');
+  return css(`--s${(rank % 8) + 1}`);
+}
+
+async function viewRemit(main) {
+  clearInterval(remitTimer); remitTimer = null;
+  if (!RMETA.max) {
+    main.innerHTML = `<div class="card"><h2>REMIT outages${tip('remit')}</h2>
+      <div class="empty">No REMIT data yet. <button type="button" class="btn" id="conRefresh">Download it</button> (a few minutes the first time; it is fetched with the Total costs and Constraints data).</div></div>`;
+    wireConRefresh(loadRMeta);
+    return;
+  }
+  const kind = RKINDS.some(([k]) => k === state.rkind) ? state.rkind : 'production';
+  const split = RSPLITS.some(([k]) => k === state.rsplit) ? state.rsplit : 'gsp';
+  const bucket = resolveBucket();
+  const long = state.rlong === '1';
+  main.innerHTML = `
+  <div class="grid kpis" id="rKpis"></div>
+  <div class="grid cols2" style="margin-top:0">
+    <div class="card">
+      <div class="card-head"><div><h2>Unavailable capacity by GSP group${tip('gspgroup')}</h2><div class="sub" id="rMapNote"></div></div>
+        <div class="controls"><label class="small muted">Show ${select('rkind', RKINDS, kind)}</label>
+          <label class="small muted"><input type="checkbox" id="rlong" ${long ? 'checked' : ''}> Closures${tip('closures')}</label></div></div>
+      <div class="replay-bar" style="margin:4px 0 0">
+        <button type="button" class="btn" id="rBack" title="Previous period">‹</button>
+        <button type="button" class="btn primary" id="rPlay" title="Step through the selected range">Play</button>
+        <button type="button" class="btn" id="rFwd" title="Next period">›</button>
+        <b id="rWhen" style="font-variant-numeric:tabular-nums"></b>
+      </div>
+      <input type="range" class="rp-slider" id="rSlider" min="0" max="0" value="0" aria-label="Period shown on the map">
+      <div class="chart" id="rMap" style="height:540px"></div>
+      <div id="rKey" class="small muted" style="display:flex;align-items:center;gap:8px;justify-content:center"></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><div><h2 id="rTableTitle">Outages</h2><div class="sub" id="rTableNote"></div></div>
+        <div class="controls"><button type="button" class="btn small" id="rClear" hidden>Show all regions</button></div></div>
+      <div id="rTable"></div>
+    </div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <div class="card-head"><div><h2>Unavailable capacity over time${tip('unavail')}</h2><div class="sub">Average MW unavailable in each period. Click a bar to show that period on the map.</div></div>
+      <div class="controls"><label class="small muted">Split by ${select('rsplit', RSPLITS, split)}</label></div></div>
+    <div class="chart tall" id="rTime"></div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <h2>About this data</h2>
+    <div class="small muted" style="line-height:1.55;margin-top:6px">
+      <b style="color:var(--ink)">REMIT messages</b> are published by the owners of generators (and large demand sites) whenever a unit's available capacity changes by 100 MW or more, planned or not, under the EU REMIT regulation as kept in GB law. Each gives the unit, its normal capacity, what is still available and when; many add a profile of the available capacity through the event. Messages are revised as an outage develops: only each message's latest revision counts, and messages the participant withdrew ("dismissed") are left out. Source: Elexon Insights (BMRS) REMIT data.<br>
+      <b style="color:var(--ink)">Closures</b>: stations that have closed or been mothballed often stay in REMIT as open-ended outages running for decades (Ratcliffe, Fiddler's Ferry and Dungeness B, for example, run to 2050). Events longer than a year are left out unless you tick <i>Closures</i>, so the map shows outages rather than retired plant.<br>
+      <b style="color:var(--ink)">Adding up</b>: a unit's unavailable capacity is its normal capacity minus what the message says is available, averaged over each half-hour. If two live messages cover the same unit at the same time (a planned outage and an unplanned extension, say) the larger counts, not both.${tip('remitadd')}<br>
+      <b style="color:var(--ink)">GSP groups</b> are the 14 regions of the distribution networks. Elexon gives embedded units a GSP group directly; transmission-connected units, which carry most of the capacity, are placed by their transmission loss factor, which Elexon sets per GSP-group zone; that places virtually all the capacity outside closures.${tip('remitplace')} Region outlines: NESO, GB DNO licence areas (NESO Open Data Licence), simplified.
+    </div>
+    <div class="small muted" id="rMeta" style="margin-top:8px"></div>
+    <button type="button" class="btn" id="conRefresh" style="margin-top:8px">Refresh data</button>
+  </div>`;
+  const upd = RMETA.updated_at ? new Date(RMETA.updated_at * 1000).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : null;
+  $('#rMeta').textContent = `${nf(0).format(RMETA.n)} messages held, for events from ${RMETA.min} to ${RMETA.max} (planned outages are published ahead)${upd ? ` · refreshed ${upd}` : ''}${RMETA.error ? ` · some sources failed: ${RMETA.error}` : ''}`;
+  wireConRefresh(loadRMeta);
+  $('#rkind').onchange = (e) => update({ rkind: e.target.value }, true);
+  $('#rsplit').onchange = (e) => update({ rsplit: e.target.value }, true);
+  $('#rlong').onchange = (e) => update({ rlong: e.target.checked ? '1' : null }, true);
+
+  const d = await api('remit/agg', { from: state.from, to: state.to, bucket, kind, long: long ? 'true' : null });
+  const cats = d.slots.map((s) => s.t);
+  const nAt = new Map(d.slots.map((s) => [s.t, s.n]));
+  const idx = new Map(cats.map((t, i) => [String(t), i]));
+  const sum = (rows) => { const v = new Array(cats.length).fill(0); for (const r of rows) v[idx.get(String(r.t))] += r.mw; return v; };
+  const total = sum(d.type), unplanned = sum(d.type.filter((r) => r.g === 'Unplanned'));
+  const byGsp = new Map();  // gsp -> MW per bucket
+  for (const r of d.gsp) { if (!byGsp.has(r.g)) byGsp.set(r.g, new Array(cats.length).fill(0)); byGsp.get(r.g)[idx.get(String(r.t))] = r.mw; }
+  const mapMax = Math.max(1, ...[...byGsp.entries()].filter(([g]) => g !== 'Unknown').flatMap(([, v]) => v));
+
+  // The period shown: the one asked for, else the one containing now, else the last.
+  const nowKey = (() => {
+    const t = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 19);
+    let best = null;
+    for (const c of cats) if (bucket === 'tod' || bucket === 'none' || String(c) <= t) best = c;
+    return best;
+  })();
+  let k = idx.has(String(state.rt)) ? idx.get(String(state.rt)) : idx.has(String(nowKey)) ? idx.get(String(nowKey)) : cats.length - 1;
+  const label = (t) => (bucket === 'none' ? 'the whole range' : bucket === 'tod' ? `${spTime(t)} (average across the range)` : bucketLabel(t, bucket) + (bucket === 'sp' ? '' : ''));
+
+  // KPIs
+  const wsum = cats.reduce((a, t, i) => a + total[i] * nAt.get(t), 0), wn = cats.reduce((a, t) => a + nAt.get(t), 0);
+  const peakI = total.reduce((b, v, i) => (v > total[b] ? i : b), 0);
+  const uw = cats.reduce((a, t, i) => a + unplanned[i] * nAt.get(t), 0);
+  const kpiAt = () => kpi(`Unavailable, ${label(cats[k])}`, mwc(total[k]), `${mwc(unplanned[k])} unplanned`, 'unavail');
+  const drawKpis = () => {
+    $('#rKpis').innerHTML = [kpiAt(),
+      kpi('Average unavailable', mwc(wn ? wsum / wn : null), `over the selected range`, 'unavail'),
+      kpi('Peak', mwc(total[peakI]), cats.length ? label(cats[peakI]) : '', 'unavail'),
+      kpi('Unplanned share', pct(ratio(uw, wsum)), `${nf(0).format(d.units)} units with outages in range`, 'planned')].join('');
+  };
+
+  // Map
+  if (!GSP_MAP) { GSP_MAP = await (await fetch('/static/vendor/gsp_groups.json')).json(); echarts.registerMap('gspg', GSP_MAP); }
+  const lo = css('--seq-lo'), hi = css('--seq-hi');
+  const mapChart = chart($('#rMap'));
+  $('#rKey').innerHTML = `<span>0</span><span style="width:160px;height:10px;border-radius:2px;background:linear-gradient(90deg,${lo},${hi})"></span><span>${esc(mwc(mapMax))}</span>`;
+  const drawMap = () => {
+    const vals = GSP_ORDER.map((g) => ({ name: g, value: byGsp.get(g)?.[k] || 0 }));
+    const unknown = byGsp.get('Unknown')?.[k] || 0;
+    $('#rMapNote').textContent = `Average MW unavailable in ${label(cats[k])}. Colour scale fixed across the range, so periods compare.${unknown >= 1 ? ` ${mwc(unknown)} could not be placed.` : ''}`;
+    $('#rWhen').textContent = label(cats[k]);
+    mapChart.setOption({
+      animation: false,
+      tooltip: { trigger: 'item', backgroundColor: css('--surface'), borderColor: css('--axis'), textStyle: { color: css('--ink') }, confine: true,
+        formatter: (p) => tipLines(`${gspName(p.name)} · ${p.name}`, [`${mwc(p.value)} unavailable on average`, label(cats[k])]) +
+          clickHint(state.rgsp === p.name ? 'Click to show every region in the table' : `Click to list only ${gspName(p.name)}'s outages`) },
+      visualMap: { show: false, min: 0, max: mapMax, inRange: { color: [lo, hi] } },
+      series: [{ type: 'map', map: 'gspg', roam: false, aspectScale: 0.6, top: 8, bottom: 8, selectedMode: false, data: vals,
+        itemStyle: { borderColor: css('--surface'), borderWidth: 1 },
+        emphasis: { itemStyle: { areaColor: css('--s4') }, label: { color: css('--ink') } },
+        label: { show: true, fontSize: 10, color: css('--ink'), textBorderColor: css('--surface'), textBorderWidth: 2,
+          formatter: (p) => (p.value >= mapMax * 0.04 ? mwc(p.value) : '') },
+        labelLayout: { hideOverlap: true },
+        markPoint: undefined }],
+    }, true);
+    // Emphasise the region the table is filtered to.
+    if (state.rgsp) mapChart.dispatchAction({ type: 'highlight', name: state.rgsp });
+  };
+  mapChart.on('click', (p) => { state.rgsp = state.rgsp === p.name ? null : p.name; writeHash(true); });
+
+  // Outage table for the period shown (latest request wins).
+  let ticket = 0;
+  const drawTable = async () => {
+    const my = ++ticket;
+    const res = await api('remit/outages', { from: state.from, to: state.to, bucket, kind, t: cats[k], long: long ? 'true' : null });
+    if (my !== ticket) return;
+    const rows = res.rows.filter((r) => !state.rgsp || r.gsp === state.rgsp);
+    $('#rTableTitle').textContent = `Outages${state.rgsp ? ` in ${gspName(state.rgsp)}` : ''}, ${label(cats[k])}`;
+    $('#rTableNote').textContent = `${rows.length} unit${rows.length === 1 ? '' : 's'}, ${mwc(rows.reduce((a, r) => a + r.mw, 0))} unavailable on average. Click a unit for its Balancing Mechanism page.`;
+    $('#rClear').hidden = !state.rgsp;
+    const fmtT = (s) => new Date(s).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit' });
+    table($('#rTable'), [
+      { key: 'asset', label: 'Unit', cls: 'wrap', html: (r) => `${esc(r.name || r.asset)} <span class="muted small">${esc(r.asset)}</span>` },
+      { key: 'mw', label: 'Unavailable', num: true, fmt: mw, tip: 'unavail' },
+      { key: 'normal_mw', label: 'Normal', num: true, fmt: mw, cls: 'hide-sm' },
+      { key: 'planned', label: 'Type', fmt: (v) => (v ? 'Planned' : 'Unplanned'), tip: 'planned' },
+      { key: 'gsp', label: 'GSP group', fmt: gspName, cls: 'hide-sm' },
+      { key: 'fuel', label: 'Fuel', cls: 'hide-sm' },
+      { key: 'end', label: 'Until', fmt: (v) => fmtT(v), cls: 'hide-sm' },
+      { key: 'cause', label: 'Cause', cls: 'hide-sm' },
+    ], rows, { onRow: (r) => openUnit(r.asset), rowTip: (r) => `${r.cause || ''}${r.cause ? ' · ' : ''}${fmtT(r.start)} to ${fmtT(r.end)} · open ${r.asset}'s BM page`, limit: 200 });
+  };
+  $('#rClear').onclick = () => { state.rgsp = null; writeHash(true); };
+
+  // Time chart
+  const series = d[split];
+  const totals = {};
+  for (const r of series) totals[r.g] = (totals[r.g] || 0) + r.mw * nAt.get(r.t);
+  let groups = Object.keys(totals).filter((g) => g !== 'Unknown').sort((a, b) => (split === 'gsp' ? GSP_ORDER.indexOf(a) - GSP_ORDER.indexOf(b) : totals[b] - totals[a]));
+  if (split === 'type') groups = ['Planned', 'Unplanned'].filter((g) => totals[g]);
+  const TOP = 7;
+  const keep = new Set(split === 'type' ? groups : [...groups].sort((a, b) => totals[b] - totals[a]).slice(0, TOP));
+  const shown = groups.filter((g) => keep.has(g));
+  const rest = groups.length > shown.length || totals.Unknown ? (split === 'gsp' ? 'Other (rest)' : 'Other (rest)') : null;
+  const name = (g) => (split === 'gsp' ? gspName(g) : g);
+  const o = baseOption();
+  o.xAxis = { ...o.xAxis, type: 'category', data: cats.map((t) => (bucket === 'none' ? 'Range' : bucketLabel(t, bucket))) };
+  o.yAxis = { ...o.yAxis, type: 'value', axisLabel: { ...o.yAxis.axisLabel, formatter: (v) => mwc(v) } };
+  o.tooltip.formatter = (ps) => tipHtml(ps[0].axisValueLabel, ps.map((p) => ({ name: p.seriesName, value: p.value, color: p.color })), mwc,
+    ps.reduce((a, p) => a + (p.value || 0), 0)) + clickHint(`Click to show ${ps[0].axisValueLabel} on the map`);
+  const gap = cats.length <= 70;
+  const bar = (nm, color, data) => ({ name: nm, type: 'bar', stack: 'a', barMaxWidth: 28, barCategoryGap: cats.length > 200 ? '0%' : '25%', color,
+    itemStyle: gap ? { borderColor: css('--surface'), borderWidth: 1 } : {}, emphasis: { disabled: true }, data });
+  o.series = shown.map((g, i) => bar(name(g), rcolour(split, g, i), sum(series.filter((r) => r.g === g))));
+  if (rest) o.series.push(bar(split === 'gsp' ? 'Other regions and not placed' : 'Other', css('--other'), sum(series.filter((r) => !keep.has(r.g)))));
+  const markOf = () => ({ silent: true, symbol: 'none', lineStyle: { color: css('--ink2'), type: 'dashed', width: 1.5 }, label: { show: false }, data: [{ xAxis: k }] });
+  if (o.series.length) o.series[0].markLine = markOf();
+  const timeChart = chart($('#rTime'));
+  timeChart.setOption(o, true);
+  timeChart.getZr().off('click');
+  timeChart.getZr().on('click', (e) => {
+    const [x] = timeChart.convertFromPixel({ xAxisIndex: 0 }, [e.offsetX, e.offsetY]) || [];
+    if (x == null || x < 0 || x >= cats.length) return;
+    pause(); go(Math.round(x));
+  });
+  $('#rTime').style.cursor = 'pointer';
+
+  const slider = $('#rSlider');
+  slider.max = String(Math.max(0, cats.length - 1));
+  const go = (i, quiet = false) => {
+    k = Math.max(0, Math.min(cats.length - 1, i));
+    slider.value = String(k);
+    state.rt = String(cats[k]);
+    const [path, qs] = location.hash.split('?'), q = new URLSearchParams(qs || '');
+    q.set('rt', state.rt);
+    history.replaceState(null, '', `${path}?${q}`);
+    drawMap(); drawKpis();
+    if (o.series.length) timeChart.setOption({ series: [{ markLine: markOf() }] });
+    if (!quiet) drawTable().catch((e) => console.error(e));
+  };
+  const pause = () => { clearInterval(remitTimer); remitTimer = null; $('#rPlay').textContent = 'Play'; drawTable().catch((e) => console.error(e)); };
+  const play = () => {
+    if (k >= cats.length - 1) go(0, true);
+    $('#rPlay').textContent = 'Pause';
+    clearInterval(remitTimer);
+    remitTimer = setInterval(() => {
+      if (!$('#rMap')?.isConnected) { clearInterval(remitTimer); remitTimer = null; return; }
+      if (k >= cats.length - 1) { pause(); return; }
+      go(k + 1);  // the table follows too; a slow reply is dropped once a newer step has asked
+    }, cats.length > 200 ? 200 : cats.length > 60 ? 300 : 600);
+  };
+  $('#rPlay').onclick = () => (remitTimer ? pause() : play());
+  $('#rBack').onclick = () => { if (remitTimer) pause(); go(k - 1); };
+  $('#rFwd').onclick = () => { if (remitTimer) pause(); go(k + 1); };
+  slider.oninput = () => { if (remitTimer) { clearInterval(remitTimer); remitTimer = null; $('#rPlay').textContent = 'Play'; } go(+slider.value, true); };
+  slider.onchange = () => drawTable().catch((e) => console.error(e));
+  if (!cats.length) { main.querySelector('#rMap').innerHTML = '<div class="empty">No periods in this range.</div>'; return; }
+  go(k);
+}
+
 // ------------------------------------------------------------------ data / ingest view
 
 let pollTimer = null;
@@ -1587,8 +1829,9 @@ async function loadMeta() {
   $('#coverage').textContent = META.days.length ? `Data held: ${META.min} to ${META.max} (${META.days.length} days)` : 'No data held';
 }
 
-/** The date range the current tab has data for: the Constraints tab has its own, separate from the unit data. */
-const extent = () => (state.view === 'constraints' ? CMETA : META);
+/** The date range the current tab has data for: the Constraints and REMIT tabs have their own, separate from the unit data. */
+const extent = () => (state.view === 'constraints' ? CMETA : state.view === 'remit' ? RMETA : META);
+const ownRange = () => state.view === 'constraints' || state.view === 'remit';
 
 function drawFilterBar() {
   const E = extent();
@@ -1602,7 +1845,7 @@ function drawFilterBar() {
   $('#bucket').onchange = (e) => update({ bucket: e.target.value }, true);
   const chips = $('#chips');
   chips.innerHTML = '';
-  chips.hidden = state.view === 'constraints'; // unit filters do not apply to system-level constraint data
+  chips.hidden = ownRange(); // unit filters do not apply to system-level constraint or REMIT data
   for (const [dim, vals] of Object.entries(state.filters)) for (const v of vals) {
     const c = document.createElement('span'); c.className = 'chip';
     c.innerHTML = `<span>${esc(DIM_LABEL[dim] || dim)}: <b></b></span><button aria-label="Remove filter">×</button>`;
@@ -1615,15 +1858,18 @@ function drawFilterBar() {
 
 async function render() {
   readHash();
-  if (!META.days.length && !['data', 'costs', 'constraints'].includes(state.view)) { state.view = 'data'; }
+  if (!META.days.length && !['data', 'costs', 'constraints', 'remit'].includes(state.view)) { state.view = 'data'; }
   const E = extent();
   if (E.max) {
+    // REMIT reaches weeks ahead (planned outages), so it opens on the weeks around today rather than at its far end.
+    if (!state.to && state.view === 'remit') state.to = addDays(iso(new Date()), 7) > E.max ? E.max : addDays(iso(new Date()), 7);
     if (!state.to || state.to > E.max) state.to = E.max;
-    if (state.view === 'constraints' && state.from && state.from < E.min) state.from = E.min;
+    if (ownRange() && state.from && state.from < E.min) state.from = E.min;
     if (!state.from || state.from > state.to) state.from = addDays(state.to, -29) < E.min ? E.min : addDays(state.to, -29);
   }
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.view === (state.view === 'unit' ? 'units' : state.view)));
-  const noFilters = state.view === 'data' || state.view === 'costs' || (state.view === 'constraints' && !CMETA.max);
+  $('#nav a.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }); // phones: the tab row scrolls sideways
+  const noFilters = state.view === 'data' || state.view === 'costs' || (state.view === 'constraints' && !CMETA.max) || (state.view === 'remit' && !RMETA.max);
   $('#filterbar').hidden = noFilters;
   if (!noFilters) drawFilterBar();
   const main = $('#main');
@@ -1632,6 +1878,7 @@ async function render() {
     else if (state.view === 'unit') await viewUnit(main);
     else if (state.view === 'costs') await viewCosts(main);
     else if (state.view === 'constraints') await viewConstraints(main);
+    else if (state.view === 'remit') await viewRemit(main);
     else if (state.view === 'data') await viewData(main);
     else viewOverview(main);
   } catch (e) { console.error(e); main.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
@@ -1649,4 +1896,5 @@ addEventListener('hashchange', render);
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', render);
 await loadMeta();
 await loadCMeta().catch((e) => console.error(e));
+await loadRMeta().catch((e) => console.error(e));
 render();
