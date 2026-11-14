@@ -138,6 +138,27 @@ SQLite (see "What is stored" below).
   two minutes, later refreshes re-fetch the current month. Stored in `data/constraint_hh.parquet` (phone: the
   `constraint_hh` table, about 12 MB for the backfill). The actual BM actions NESO took for constraints carry the
   SO flag; the tab links to the Overview filtered to them, split by technology and unit.
+- **REMIT tab**: how much generating capacity was unavailable, when, and in which GSP group, from the REMIT outage
+  messages that owners must publish for any change of 100 MW or more (Elexon Insights REMIT data). A map of the 14 GSP
+  groups shows the average MW unavailable in one period, chosen with a slider (or Play, which steps through the
+  selected range on a fixed colour scale); the table lists the units behind it, and a stacked chart shows unavailable
+  capacity over time by GSP group, fuel or planned/unplanned (click a bar to put that period on the map). It uses the
+  same date range and granularity controls as the Constraints tab and reaches 28 days ahead, because planned outages
+  are published in advance. Rules (`remit.py`, mirrored in `core/Remit.kt`): only each message's latest revision
+  counts and withdrawn ("Dismissed") messages are ignored; a unit's unavailable MW is its normal capacity minus the
+  outage profile's available capacity (or the message's own unavailable capacity when there is no profile), averaged
+  over each half-hour; overlapping live messages for one unit count once (the larger). Events longer than a year are
+  hidden unless *Closures* is ticked: closed and mothballed stations stay in REMIT as open-ended outages (Ratcliffe,
+  Fiddler's Ferry and Dungeness B run to 2050), which would otherwise add over 10 GW to every period. **GSP group**:
+  Elexon's reference data gives one for embedded units only; transmission-connected units are placed by their
+  transmission loss factor, which Elexon sets per GSP-group zone, so a loss factor shared by many units of one known
+  group identifies the zone. That places virtually all the capacity outside closures (checked by hand: Drax in
+  Yorkshire, Medway in the South East, Heysham in the North West). Region outlines: NESO's GB DNO licence areas
+  (NESO Open Data Licence), simplified to 50 KB in `static/vendor/gsp_groups.json`. Fetched with the Total costs data
+  (`bmdash costs`, the end of `bmdash ingest`, or the Refresh button): the first backfill from April 2025 is about
+  25,000 messages and three to five minutes; later refreshes fetch only what was published since, plus the forward
+  window, in seconds. Stored in `data/remit_msg.parquet` and `data/remit_seg.parquet` (1.3 MB; phone: the `remit_msg`
+  and `remit_seg` tables, about 10 MB).
 - **Instruction replay**: on a unit's page, the Day detail card can replay NESO's instructions
   for the day in the order they were issued (plays and loops on its own by default; pause, step,
   slider, and a Loop toggle; reduced-motion users get the final state), showing the unit's plan
@@ -150,7 +171,7 @@ SQLite (see "What is stored" below).
   phone code path can be exercised and compared with the Python backend without a device:
   `gradle -p android :harness:installDist`, then
   `android/harness/build/install/harness/bin/harness ingest --days 7 --db /tmp/bm.sqlite` and
-  `... serve --db /tmp/bm.sqlite --static bmdash/static`.
+  `... serve --db /tmp/bm.sqlite --static bmdash/static` (`... remit --db /tmp/bm.sqlite` fetches just the REMIT data).
 
 Build: `gradle -p android :app:assembleRelease` (JDK 17+, Android SDK 35) gives
 `android/app/build/outputs/apk/release/app-release.apk`, signed with the debug key so it can be

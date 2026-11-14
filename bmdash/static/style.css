@@ -77,6 +77,7 @@ th { position: sticky; top: 0; background: var(--surface); color: var(--ink2); f
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 tbody tr.click { cursor: pointer; }
 tbody tr.click:hover { background: var(--wash); }
+td.wrap { white-space: normal; min-width: 150px; }
 .tag { display: inline-flex; align-items: center; gap: 6px; }
 .dot { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
 
@@ -108,7 +109,8 @@ tbody tr.click:hover { background: var(--wash); }
   .brand { font-size: 15px; }
   .top .spacer { display: none; }
   #coverage { order: 3; font-size: 11px; }
-  nav { margin-left: auto; }
+  nav { margin-left: auto; max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+  nav a { flex: none; }
   nav a { padding: 8px 12px; }
   .filters { position: static; padding: 8px 12px; gap: 8px 10px; }
   .seg button { padding: 8px 11px; }

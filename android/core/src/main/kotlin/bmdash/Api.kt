@@ -45,6 +45,9 @@ class Api(private val db: SqlDb, private val control: IngestControl, private val
         r == "constraints/meta" -> constraintsMeta()
         r == "constraints/agg" -> constraintsAgg(date(p, "from"), date(p, "to"), p["bucket"] ?: "day")
         r == "constraints/costs" -> constraintsCosts(date(p, "from"), date(p, "to"), p["bucket"] ?: "day")
+        r == "remit/meta" -> Remit.meta(db, costs?.running ?: false, costs?.status()?.get("error") as? String ?: "")
+        r == "remit/agg" -> { checkBucket(p); Remit.aggregate(db, LocalDate.parse(date(p, "from")), LocalDate.parse(date(p, "to")), kind(p), p["bucket"] ?: "day", bool(p, "long")) }
+        r == "remit/outages" -> { checkBucket(p); mapOf("rows" to Remit.outages(db, LocalDate.parse(date(p, "from")), LocalDate.parse(date(p, "to")), kind(p), p["bucket"] ?: "day", req(p, "t"), bool(p, "long"))) }
         r == "costs/refresh" -> { startCosts?.invoke() ?: throw HttpError(404, "Not Found"); mapOf("running" to true) }
         r == "version" -> appVersion?.let { mapOf("version" to it) } ?: throw HttpError(404, "Not Found")
         r == "debug" -> debug?.let { it.ensureRunning(); it.snapshot() } ?: throw HttpError(404, "Not Found")
@@ -345,6 +348,12 @@ class Api(private val db: SqlDb, private val control: IngestControl, private val
         val through = db.query("SELECT max(date) AS d FROM cost_daily WHERE source = 'thermal'")[0]["d"]
         return linkedMapOf("rows" to rows, "daily" to (bucket in setOf("sp", "hour", "tod")), "through" to through)
     }
+
+    // ------------------------------------------------------------ REMIT outages (mirrors api.py; the work is in Remit.kt)
+
+    private fun checkBucket(p: Map<String, String>) { if ((p["bucket"] ?: "day") !in BUCKETS) throw HttpError(400, "bad bucket") }
+    private fun bool(p: Map<String, String>, k: String) = p[k] == "true" || p[k] == "1"
+    private fun kind(p: Map<String, String>): String = (p["kind"] ?: "production").also { if (it !in Remit.KINDS) throw HttpError(400, "bad kind") }
 
     private fun startIngest(p: Map<String, String>): Any {
         val a = LocalDate.parse(req(p, "start")); val b = LocalDate.parse(req(p, "end"))

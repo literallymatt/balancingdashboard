@@ -34,6 +34,12 @@ object Store {
         // stores the rows once, in key order: half the size of a rowid table plus its primary-key index.
         """CREATE TABLE IF NOT EXISTS constraint_hh (settlement_date TEXT NOT NULL, sp INTEGER NOT NULL, grp TEXT NOT NULL,
             limit_mw REAL, flow_mw REAL, PRIMARY KEY (settlement_date, grp, sp)) WITHOUT ROWID""",
+        // REMIT tab (see Remit.kt): one row per outage message (latest revision) and its unavailable MW through the event.
+        """CREATE TABLE IF NOT EXISTS remit_msg (mrid TEXT PRIMARY KEY, revision INTEGER, msg_id INTEGER, published INTEGER, kind TEXT,
+            planned INTEGER, status TEXT, asset_id TEXT, unit_name TEXT, fuel TEXT, gsp_group TEXT, normal_mw REAL, available_mw REAL,
+            unavailable_mw REAL, t_start INTEGER, t_end INTEGER, cause TEXT, participant TEXT)""",
+        "CREATE TABLE IF NOT EXISTS remit_seg (mrid TEXT NOT NULL, t0 INTEGER, t1 INTEGER, mw REAL)",
+        "CREATE INDEX IF NOT EXISTS remit_seg_mrid ON remit_seg(mrid)",
     )
 
     fun init(db: SqlDb) {

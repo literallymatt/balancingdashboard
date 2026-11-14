@@ -102,6 +102,11 @@ fun main(args: Array<String>) {
             val ok = ci.run(opt(args, "from")?.let(LocalDate::parse), opt(args, "to")?.let(LocalDate::parse) ?: Ingester.today())
             println("costs: ${if (ok) "ok" else "errors: " + ci.error}")
         }
+        "remit" -> {  // just the REMIT messages (normally fetched as part of `costs`)
+            val t = System.currentTimeMillis()
+            val n = bmdash.Remit.ingest(db, bmdash.Elexon(3))
+            println("remit: $n messages stored in ${(System.currentTimeMillis() - t) / 1000}s")
+        }
         "serve" -> {
             val staticDir = File(opt(args, "static", "../bmdash/static")!!)
             val control = ThreadIngestControl(ingester)

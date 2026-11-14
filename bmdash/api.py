@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import costs, ingest, store
+from . import costs, ingest, remit, store
 from .elexon import Elexon
 
 STATIC = Path(__file__).parent / "static"
@@ -360,6 +360,40 @@ def constraints_costs(start: date = Query(alias="from"), end: date = Query(alias
              [start, end])
     through = q("SELECT max(date) AS d FROM cost_daily WHERE source = 'thermal'")[0]["d"]
     return {"rows": _clean(rows), "daily": bucket in ("sp", "hour", "tod"), "through": through.isoformat() if through else None}
+
+
+# ---------------------------------------------------------------- REMIT outages (see remit.py)
+
+def _kind(kind: str) -> str:
+    if kind not in remit.KINDS:
+        raise HTTPException(400, "bad kind")
+    return kind
+
+
+@app.get("/api/remit/meta")
+def remit_meta():
+    m, _ = remit.read()
+    return {**remit.extent(), "n": m.num_rows, "updated_at": remit.status().get("updated_at"),
+            "error": costs.status().get("error", ""), "running": COSTS_JOB["running"]}
+
+
+@app.get("/api/remit/agg")
+def remit_agg(start: date = Query(alias="from"), end: date = Query(alias="to"), bucket: str = "day", kind: str = "production",
+              long: bool = False):
+    """Average unavailable MW per time bucket, by GSP group, by fuel and by planned / unplanned. `long` includes events
+    longer than a year (closed and mothballed stations)."""
+    if bucket not in BUCKETS:
+        raise HTTPException(400, "bad bucket")
+    return remit.aggregate(start, end, _kind(kind), bucket, long)
+
+
+@app.get("/api/remit/outages")
+def remit_outages(t: str, start: date = Query(alias="from"), end: date = Query(alias="to"), bucket: str = "day",
+                  kind: str = "production", long: bool = False):
+    """Units with capacity unavailable in the time bucket `t` (a label from /api/remit/agg)."""
+    if bucket not in BUCKETS:
+        raise HTTPException(400, "bad bucket")
+    return {"rows": remit.outages(start, end, _kind(kind), bucket, t, long)}
 
 
 COSTS_JOB = {"running": False}

@@ -9,6 +9,7 @@ These figures are totals with no unit or asset behind them, so they live apart f
   window length). Monthly (dated the first of the month).
 - ``thermal`` and ``constraint_type``: daily constraint costs for the Constraints tab, plus the half-hourly
   boundary flows and limits (see constraints.py).
+- REMIT outage messages for the REMIT tab are fetched in the same refresh (see remit.py).
 
 BM cost is derived as NESO's total minus BSAD: NESO's total covers the BM plus non-BM actions, and that
 difference tracks the unit-level Elexon BM cashflows to within about 1%.
@@ -192,7 +193,7 @@ def ingest_costs(start: date | None = None, end: date | None = None, log=print) 
     start = start or incremental_start()
     end = end or datetime.now(timezone.utc).date()
     store.DATA.mkdir(parents=True, exist_ok=True)
-    from . import constraints  # imports this module, so not at the top
+    from . import constraints, remit  # constraints imports this module, so not at the top
 
     errors, new = [], []
     with httpx.Client(headers={"User-Agent": "bmdash/0.1"}, follow_redirects=True) as client:
@@ -216,6 +217,12 @@ def ingest_costs(start: date | None = None, end: date | None = None, log=print) 
         except Exception as e:
             errors.append(f"boundaries: {e}")
             log(f"  boundaries: FAILED {e}")
+        # REMIT outage messages (REMIT tab): incremental by publication time once held.
+        try:
+            remit.ingest_remit(client, log)
+        except Exception as e:
+            errors.append(f"remit: {e}")
+            log(f"  remit: FAILED {e}")
     fresh = {(s, c) for _, s, c, _ in new}
     sources = {s for s, _ in fresh}
     # replace what this run fetched, within the fetched range; keep everything else

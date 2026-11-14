@@ -5,7 +5,8 @@ import java.time.LocalDate
 /**
  * System-level balancing costs for the Total costs tab, from public sources (see bmdash/costs.py):
  * NESO's daily cost data by purpose, Elexon BSAD (non-BM actions) and the EAC response/reserve auctions;
- * plus the network constraint data for the Constraints tab (daily constraint costs, half-hourly boundary flows).
+ * plus the network constraint data for the Constraints tab (daily constraint costs, half-hourly boundary flows) and the
+ * REMIT outage messages for the REMIT tab (see Remit.kt).
  * Totals only: there is no unit or asset behind these figures.
  */
 class CostIngester(private val db: SqlDb) {
@@ -75,6 +76,12 @@ class CostIngester(private val db: SqlDb) {
                 }
             } catch (e: Exception) {
                 errors.add("boundaries: ${e.message}")
+            }
+            // REMIT outage messages (REMIT tab): incremental by publication time once held.
+            try {
+                Remit.ingest(db, Elexon(3))
+            } catch (e: Exception) {
+                errors.add("remit: ${e.message}")
             }
         } catch (e: Exception) {
             errors.add(e.message ?: e.toString())
