@@ -139,7 +139,8 @@ SQLite (see "What is stored" below).
   `constraint_hh` table, about 12 MB for the backfill). The actual BM actions NESO took for constraints carry the
   SO flag; the tab links to the Overview filtered to them, split by technology and unit.
 - **Instruction replay**: on a unit's page, the Day detail card can replay NESO's instructions
-  for the day in the order they were issued (play, pause, step, slider), showing the unit's plan
+  for the day in the order they were issued (plays and loops on its own by default; pause, step,
+  slider, and a Loop toggle; reduced-motion users get the final state), showing the unit's plan
   (PN), its output as instructed so far, the previous state and the newest instruction, with a
   marker for when each was issued. Model: the unit follows the newest-issued acceptance covering
   each moment, or its own plan when none does. Checked against Elexon's settled volumes on
