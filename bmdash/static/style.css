@@ -99,6 +99,7 @@ tbody tr.click:hover { background: var(--wash); }
 .tt .r span { color: var(--ink2); flex: 1; }
 .tt .r b { font-variant-numeric: tabular-nums; }
 .tt .tot { border-top: 1px solid var(--grid); margin-top: 4px; padding-top: 4px; }
+.tt-hint { font-size: 11px; color: var(--muted); border-top: 1px solid var(--grid); margin-top: 6px; padding-top: 4px; }
 
 /* ---- phones / narrow windows ---- */
 @media (max-width: 700px) {

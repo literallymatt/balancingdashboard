@@ -196,6 +196,20 @@ function tipHtml(title, items, fmt, total) {
   return `<div class="tt"><div class="t">${esc(title)}</div>${rows.join('')}${tot}</div>`;
 }
 
+/** Footer line for a tooltip saying where a click goes. */
+const clickHint = (text) => (text ? `<div class="tt-hint">${esc(text)}</div>` : '');
+
+/** Where drillTime() takes you for one time bucket, in words; null when a click does nothing. */
+function drillHint(t, bucket) {
+  if (bucket === 'tod' || t == null) return null;
+  const d = String(t).slice(0, 10), day = bucketLabel(d + 'T00:00:00', 'day');
+  if (bucket === 'sp' || bucket === 'hour' || bucket === 'day') {
+    if (state.view === 'unit') return `Click to zoom to ${day} and show this unit's half-hourly detail`;
+    return bucket === 'day' || state.from !== d || state.to !== d ? `Click to zoom to ${day}` : null;
+  }
+  return bucket === 'week' ? `Click to zoom to the week starting ${day}` : `Click to zoom to ${bucketLabel(t, 'month')}`;
+}
+
 async function loading(el, fn) {
   el.classList.add('loading');
   try { await fn(); } catch (e) { console.error(e); el.innerHTML = `<div class="empty">${esc(e.message)}</div>`; charts.delete(el); }
@@ -246,7 +260,7 @@ async function timeChart(el, tableEl) {
     const items = ps.map((p) => ({ name: p.seriesName + (series[p.seriesIndex]._tag && split !== 'none' ? ` · ${series[p.seriesIndex]._tag}` : ''), value: p.value, color: p.color }));
     items.sort((a, b) => Math.abs(b.value || 0) - Math.abs(a.value || 0));
     const total = m.line || m.parts.length > 1 ? null : items.reduce((s, i) => s + (i.value || 0), 0);
-    return tipHtml(ps[0].axisValueLabel, items, m.fmt, total);
+    return tipHtml(ps[0].axisValueLabel, items, m.fmt, total) + clickHint(drillHint(cats[ps[0].dataIndex], bucket));
   };
   o.series = series;
   const c = chart(el);
@@ -305,7 +319,8 @@ async function breakdownChart(el) {
       ].map((i) => ({ ...i, name: `${i.name}: ${i.f(i.value)}`, value: 1 })), () => '') +
         `<div class="tt"><div class="r"><span>Offers ${esc(mwh(r.offer_vol))} @ ${esc(price(ratio(r.offer_cash, r.offer_vol)))}</span></div>` +
         `<div class="r"><span>Bids ${esc(mwh(r.bid_vol))} @ ${esc(price(ratio(r.bid_cash, r.bid_vol)))}</span></div>` +
-        `<div class="r"><span>${r.n_units} unit${r.n_units === 1 ? '' : 's'}</span></div></div>`;
+        `<div class="r"><span>${r.n_units} unit${r.n_units === 1 ? '' : 's'}</span></div></div>` +
+        clickHint(dim === 'unit' ? `Click to open the unit page for ${r.g}` : `Click to filter everything to ${DIM_LABEL[dim]}: ${r.g}`);
     } };
   o.yAxis = { ...o.yAxis, type: 'category', data: rows.map((r) => r.g), splitLine: { show: false },
     axisLabel: { color: css('--ink2'), fontSize: 12, width: el.clientWidth < 560 ? 105 : 170, overflow: 'truncate' } };
@@ -351,7 +366,8 @@ async function heatmapChart(el) {
   o.tooltip = { ...o.tooltip, trigger: 'item', formatter: (p) => {
     const d = new Date(days[p.value[0]] + 'T00:00:00Z');
     return tipHtml(`${DOW[d.getUTCDay()]} ${d.getUTCDate()} ${MON[d.getUTCMonth()]} · SP ${p.value[1] + 1} (${spTime(p.value[1] + 1)})`,
-      [{ name: m.line ? 'Avg offer price' : m.label, value: p.value[2], color: p.color }], m.fmt);
+      [{ name: m.line ? 'Avg offer price' : m.label, value: p.value[2], color: p.color }], m.fmt) +
+      clickHint(drillHint(days[p.value[0]], 'day'));
   } };
   o.xAxis = { ...o.xAxis, type: 'category', data: days.map((d) => `${+d.slice(8)} ${MON[+d.slice(5, 7) - 1]}`), splitArea: { show: false } };
   o.yAxis = { ...o.yAxis, type: 'category', data: Array.from({ length: 50 }, (_, i) => spTime(i + 1)), inverse: true,
@@ -428,7 +444,7 @@ async function bsadChart(el) {
 
 // ------------------------------------------------------------------ tables
 
-function table(el, cols, rows, { onRow, limit = 300, sort } = {}) {
+function table(el, cols, rows, { onRow, rowTip, limit = 300, sort } = {}) {
   let s = sort || null;
   const draw = () => {
     const data = s ? [...rows].sort((a, b) => {
@@ -436,8 +452,8 @@ function table(el, cols, rows, { onRow, limit = 300, sort } = {}) {
       const c = typeof x === 'number' || typeof y === 'number' ? (x ?? -Infinity) - (y ?? -Infinity) : String(x ?? '').localeCompare(String(y ?? ''));
       return s.desc ? -c : c;
     }) : rows;
-    const head = cols.map((c) => `<th class="${c.num ? 'num' : ''} ${c.cls || ''}" data-k="${esc(c.key)}">${esc(c.label)}${s?.key === c.key ? (s.desc ? ' ↓' : ' ↑') : ''}${c.tip ? tip(c.tip) : ''}</th>`).join('');
-    const body = data.slice(0, limit).map((r, i) => `<tr data-i="${i}" class="${onRow ? 'click' : ''}">${cols.map((c) =>
+    const head = cols.map((c) => `<th class="${c.num ? 'num' : ''} ${c.cls || ''}" data-k="${esc(c.key)}" title="Sort by ${esc(c.label)}">${esc(c.label)}${s?.key === c.key ? (s.desc ? ' ↓' : ' ↑') : ''}${c.tip ? tip(c.tip) : ''}</th>`).join('');
+    const body = data.slice(0, limit).map((r, i) => `<tr data-i="${i}" class="${onRow ? 'click' : ''}"${rowTip ? ` title="${esc(rowTip(r))}"` : ''}>${cols.map((c) =>
       `<td class="${c.num ? 'num' : ''} ${c.cls || ''}">${c.html ? c.html(r) : esc(c.fmt ? c.fmt(r[c.key], r) : r[c.key] ?? '')}</td>`).join('')}</tr>`).join('');
     el.innerHTML = `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>` +
       (data.length > limit ? `<div class="muted small" style="margin-top:6px">Showing ${limit} of ${data.length} rows</div>` : '') +
@@ -521,7 +537,7 @@ const GLOSS = {
   reasons: ['Reasons for constraint actions', 'NESO splits its constraint costs by reason. Thermal: a line would overheat (the boundaries on this tab). Voltage: keeping voltage within limits in an area. System inertia: keeping enough spinning machines on to steady frequency. Largest loss: limiting the biggest single source that could trip.'],
   amendment: ['Amendment', 'Whether the record is the original acceptance (ORI) or a later change to an earlier one, for example an update or deletion.'],
 };
-const tip = (k) => (GLOSS[k] ? `<button type="button" class="info" data-tip="${k}" aria-label="What does ${esc(GLOSS[k][0])} mean?">i</button>` : '');
+const tip = (k) => (GLOSS[k] ? `<button type="button" class="info" data-tip="${k}" aria-label="What does ${esc(GLOSS[k][0])} mean?" title="Click for what ${esc(GLOSS[k][0])} means">i</button>` : '');
 
 function showTip(btn) {
   const box = $('#tipbox');
@@ -654,7 +670,7 @@ async function viewUnits(main) {
       const s = $('#search').value.toLowerCase();
       const f = s ? rows.filter((r) => `${r.bm_unit} ${r.name} ${r.party} ${r.tech}`.toLowerCase().includes(s)) : rows;
       $('#unitsNote').textContent = `${f.length} units with accepted actions in the selected range. Click a unit to drill in.`;
-      table(el, cols, f, { onRow: (r) => openUnit(r.bm_unit), sort: { key: 'net', desc: true }, limit: 500 });
+      table(el, cols, f, { onRow: (r) => openUnit(r.bm_unit), rowTip: (r) => `Open the unit page for ${r.bm_unit}${r.name ? ` (${r.name})` : ''}`, sort: { key: 'net', desc: true }, limit: 500 });
     };
     $('#search').oninput = draw;
     draw();
@@ -1114,7 +1130,7 @@ async function viewConstraints(main) {
     <div class="small muted" style="line-height:1.55;margin-top:6px">
       <b style="color:var(--ink)">Boundaries</b> are NESO's day-ahead constraint flows and limits: for each transmission boundary and half-hour, the most power the boundary can safely carry (limit) and the flow NESO forecast across it the day before. A forecast at or over the limit means NESO expected to have to act, typically turning generation down on the exporting side (often Scottish wind) and up on the other. These are forecasts, not metered flows, and NESO renames boundaries as the network changes (for example SSE_SP became SSE_SP2), so a boundary may only cover part of the range. Map positions are schematic, drawn from NESO's network diagrams.<br>
       <b style="color:var(--ink)">Costs</b> are NESO's daily outturn: thermal constraint cost for its main boundary groups, and total constraint cost split by reason. They are only published per day, a few days late.<br>
-      <b style="color:var(--ink)">What actually happened</b>: the BM actions NESO took for constraints carry the SO flag. <a href="#" id="soLink">See the SO-flagged BM actions by technology and unit</a> in the Overview (most are transmission-connected, so GSP group says little) (unit data held: ${esc(META.min || 'none')} to ${esc(META.max || '')}).
+      <b style="color:var(--ink)">What actually happened</b>: the BM actions NESO took for constraints carry the SO flag. <a href="#" id="soLink" title="Opens the Overview filtered to SO-flagged actions, by technology and unit">See the SO-flagged BM actions by technology and unit</a> in the Overview (most are transmission-connected, so GSP group says little) (unit data held: ${esc(META.min || 'none')} to ${esc(META.max || '')}).
     </div>
     <div class="small muted" id="conMeta" style="margin-top:8px"></div>
     <button type="button" class="btn" id="conRefresh" style="margin-top:8px">Refresh data</button>
@@ -1213,7 +1229,7 @@ async function conMap(el, totals, m, onPick) {
   const o = {
     animation: false,
     tooltip: { trigger: 'item', backgroundColor: css('--surface'), borderColor: css('--axis'), textStyle: { color: css('--ink') }, confine: true,
-      formatter: (p) => (p.data?.r ? tipFor(p.data.r) : '') },
+      formatter: (p) => (p.data?.r ? tipFor(p.data.r) + clickHint(`Click to show ${bname(p.data.r.g)}'s flow against its limit below`) : '') },
     geo: { map: 'gb', roam: false, silent: true, aspectScale: 0.6, top: 8, bottom: 8,
       itemStyle: { areaColor: css('--wash'), borderColor: css('--axis'), borderWidth: 0.6 } },
     series: [
@@ -1246,7 +1262,7 @@ function conTable(el, totals, thermal, onPick) {
     { key: 'limit', label: 'Avg limit', num: true, fmt: mw, cls: 'hide-sm' },
     { key: 'excess', label: 'Over limit', num: true, fmt: mwh, tip: 'excess' },
     { key: 'cost', label: 'Thermal cost', num: true, fmt: (v) => (v == null ? '–' : gbp(v)), tip: 'constraintcost' },
-  ], rows, { onRow: (r) => onPick(r.g), limit: 60 });
+  ], rows, { onRow: (r) => onPick(r.g), rowTip: (r) => `Show ${r.name}'s flow against its limit below`, limit: 60 });
 }
 
 /** Boundary x time-bucket grid, one sequential hue. */
@@ -1269,7 +1285,8 @@ function conHeat(el, rows, bucket, m) {
       `At or over the limit: ${nf(0).format(r.n_bind)} of ${nf(0).format(r.n)} half-hours (${pct(ratio(r.n_bind, r.n))})`,
       `Average loading ${pct(r.load_avg)} · peak ${pct(r.load_max)}`,
       `Flow ${mw(r.flow_avg)} average, ${mw(r.flow_max)} peak · limit ${mw(r.limit_avg)}`,
-      `Energy over the limit ${mwh(r.excess_mwh)}`]);
+      `Energy over the limit ${mwh(r.excess_mwh)}`]) +
+      clickHint(bucket === 'tod' ? null : `Click to zoom to ${bucketLabel(r.t, bucket)} and show ${bname(r.g)}'s detail`);
   } };
   o.xAxis = { ...o.xAxis, type: 'category', data: cats.map((t) => bucketLabel(t, bucket)), splitArea: { show: false } };
   const dupe = (g) => groups.filter((x) => bname(x) === bname(g)).length > 1;
@@ -1567,7 +1584,7 @@ function drawFilterBar() {
   const E = extent();
   const span = (n) => ({ from: n ? addDays(E.max, -(n - 1)) < E.min ? E.min : addDays(E.max, -(n - 1)) : E.min, to: E.max });
   const presets = [['1D', 1], ['7D', 7], ['30D', 30], ['90D', 90], ['1Y', 365], ['All', 0]];
-  $('#presets').innerHTML = presets.map(([l, n]) => { const s = span(n); return `<button data-n="${n}" class="${s.from === state.from && s.to === state.to ? 'on' : ''}">${l}</button>`; }).join('');
+  $('#presets').innerHTML = presets.map(([l, n]) => { const s = span(n); return `<button data-n="${n}" title="${n ? `Show the latest ${n === 1 ? 'day' : `${n} days`} of data` : 'Show all data held'}" class="${s.from === state.from && s.to === state.to ? 'on' : ''}">${l}</button>`; }).join('');
   $('#presets').querySelectorAll('button').forEach((b) => b.onclick = () => update({ ...span(+b.dataset.n), bucket: 'auto' }));
   for (const k of ['from', 'to']) { const i = $('#' + k); i.value = state[k]; i.min = E.min; i.max = E.max;
     i.onchange = () => { if (i.value) update({ [k]: i.value, ...(k === 'from' && i.value > state.to ? { to: i.value } : {}), ...(k === 'to' && i.value < state.from ? { from: i.value } : {}) }); }; }
@@ -1578,8 +1595,9 @@ function drawFilterBar() {
   chips.hidden = state.view === 'constraints'; // unit filters do not apply to system-level constraint data
   for (const [dim, vals] of Object.entries(state.filters)) for (const v of vals) {
     const c = document.createElement('span'); c.className = 'chip';
-    c.innerHTML = `<span>${esc(DIM_LABEL[dim] || dim)}: <b></b></span><button title="Remove filter" aria-label="Remove filter">×</button>`;
+    c.innerHTML = `<span>${esc(DIM_LABEL[dim] || dim)}: <b></b></span><button aria-label="Remove filter">×</button>`;
     c.querySelector('b').textContent = v;
+    c.querySelector('button').title = `Remove the ${DIM_LABEL[dim] || dim} filter (${v})`;
     c.querySelector('button').onclick = () => { const f = { ...state.filters }; f[dim] = f[dim].filter((x) => x !== v); if (!f[dim].length) delete f[dim]; update({ filters: f }); };
     chips.append(c);
   }

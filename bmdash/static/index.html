@@ -10,15 +10,15 @@
 <header class="top">
   <div class="brand">GB Balancing Mechanism</div>
   <nav id="nav">
-    <a href="#/overview" data-view="overview">Overview</a>
-    <a href="#/units" data-view="units">Units</a>
-    <a href="#/costs" data-view="costs">Costs</a>
-    <a href="#/constraints" data-view="constraints">Constraints</a>
-    <a href="#/data" data-view="data">Data</a>
+    <a href="#/overview" data-view="overview" title="Overview: system-wide BM costs over time, by technology and party">Overview</a>
+    <a href="#/units" data-view="units" title="Units: every BM unit with accepted actions, ranked by cost">Units</a>
+    <a href="#/costs" data-view="costs" title="Costs: total balancing costs by month, by source or purpose">Costs</a>
+    <a href="#/constraints" data-view="constraints" title="Constraints: boundary flows against their limits, and constraint costs">Constraints</a>
+    <a href="#/data" data-view="data" title="Data: what is held and fetch more from Elexon">Data</a>
   </nav>
   <div class="spacer"></div>
   <div id="coverage" class="muted small"></div>
-  <button type="button" id="dbgBtn" class="btn small" title="CPU, heat and data use">Debug</button>
+  <button type="button" id="dbgBtn" class="btn small" title="Open the debug panel: CPU, heat and data use">Debug</button>
 </header>
 
 <div class="filters" id="filterbar">
@@ -34,7 +34,7 @@
       <option value="week">Week</option>
       <option value="month">Month</option>
       <option value="tod">Time-of-day profile</option>
-    </select><button type="button" class="info" data-tip="gran" aria-label="What does Granularity mean?">i</button>
+    </select><button type="button" class="info" data-tip="gran" aria-label="What does Granularity mean?" title="Click for what Granularity means">i</button>
   </label>
   <div id="chips"></div>
 </div>
