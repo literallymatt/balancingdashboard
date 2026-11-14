@@ -179,4 +179,8 @@ def connect() -> duckdb.DuckDBPyConnection:
     interconnectors.ensure_layout()
     for name, path in (("ic_trade", interconnectors.TRADE_PATH), ("ic_flow", interconnectors.FLOW_PATH)):
         con.execute(f"CREATE VIEW {name} AS SELECT * FROM read_parquet('{path.as_posix()}')")
+    from . import dfs  # DFS tab: event half-hours and bids (see dfs.py)
+    dfs.ensure_layout()
+    for name, path in (("dfs_hh", dfs.HH_PATH), ("dfs_bid", dfs.BID_PATH)):
+        con.execute(f"CREATE VIEW {name} AS SELECT * FROM read_parquet('{path.as_posix()}')")
     return con

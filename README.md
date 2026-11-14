@@ -175,6 +175,24 @@ SQLite (see "What is stored" below).
   `data/ic_trade.parquet` (summed per settlement period, link, counterparty, kind, SO flag and direction; about 80k rows) and
   `data/ic_flow_hh.parquet` (phone: the `ic_trade` and `ic_flow` tables). Landing points are approximate (outline: Natural Earth,
   public domain, `static/vendor/nweurope.json`).
+- **DFS tab**: NESO's Demand Flexibility Service, in which households and businesses are paid, through registered providers
+  (suppliers and aggregators), to shift their demand for set half-hours: *turn-down* (Downwards) events ask them to use less,
+  *turn-up* (Upwards, from April 2026) to use more. NESO tags each event *Energy* or *System*. Providers bid a volume per DFS unit
+  and half-hour at a price and NESO accepts bids, cheapest first, up to its requirement; settlement later measures what was
+  delivered. Source: NESO Data Portal, `demand-flexibility` package: the *DFS Utilisation Report Summary* (one row per event
+  half-hour: requirement, MW procured, accepted cost, settled volume and cost) and the *DFS Utilisation Report* (one row per bid:
+  provider, DFS unit, zone, MW, price, accepted or rejected), for the current year and the 2025/26 archive (which starts in
+  November 2024). The tab shows KPIs (events, procured volume against the requirement, accepted cost, share delivered, providers),
+  the usual time chart (procured volume, accepted cost, average price, share of requirement procured, delivered volume; split by
+  direction, reason, provider or zone), a table of events, the bid stack for any half-hour of an event (each bid as wide as its MW
+  and as tall as its price, accepted or rejected), a provider / zone / DFS unit breakdown and a day x settlement-period grid. Click
+  a provider to filter the tab to it. Notes: volumes are MW for a half-hour, shown as MWh; accepted bids add up exactly to NESO's
+  procured MW and cost for every half-hour (checked over all 3,130 event half-hours). The archive has no event numbers, types or
+  tags (one Downwards event a day), so its events are named by date with the reason "Not stated"; zones (1-12) start in April
+  2026. Provider names are upper-cased without "Limited", because NESO spells some differently between files. Test events are
+  left out unless ticked. Fetched with the Total costs data (`bmdash costs`, the end of `bmdash ingest`, or the Refresh button):
+  about 35k rows, ten seconds; later refreshes re-read only the current year's files. Stored in `data/dfs_hh.parquet` and
+  `data/dfs_bid.parquet` (phone: the `dfs_hh` and `dfs_bid` tables; `harness ... dfs --db /tmp/bm.sqlite` fetches just these).
 - **Instruction replay**: on a unit's page, the Day detail card can replay NESO's instructions
   for the day in the order they were issued (plays and loops on its own by default; pause, step,
   slider, and a Loop toggle; reduced-motion users get the final state), showing the unit's plan
