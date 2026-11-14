@@ -119,7 +119,8 @@ SQLite (see "What is stored" below).
   actuals found): other ancillary services (reactive, black start, stability/voltage, reserve delivery), SO-SO
   trades (Elexon's `SOSO` is a price ladder, not executed trades) and reconciliation. Refresh with
   `uv run bmdash costs` (also run at the end of `bmdash ingest`) or the Refresh button; the phone app refreshes
-  it on launch when older than 12 hours.
+  it on launch when older than 12 hours. The first run backfills from April 2025 (about a minute); after that a
+  refresh only re-fetches the current month or so, a few seconds.
 - **Instruction replay**: on a unit's page, the Day detail card can replay NESO's instructions
   for the day in the order they were issued (play, pause, step, slider), showing the unit's plan
   (PN), its output as instructed so far, the previous state and the newest instruction, with a

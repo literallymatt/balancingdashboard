@@ -99,7 +99,7 @@ fun main(args: Array<String>) {
         }
         "costs" -> {
             val ci = CostIngester(db)
-            val ok = ci.run(opt(args, "from")?.let(LocalDate::parse) ?: CostIngester.DEFAULT_START, opt(args, "to")?.let(LocalDate::parse) ?: Ingester.today())
+            val ok = ci.run(opt(args, "from")?.let(LocalDate::parse), opt(args, "to")?.let(LocalDate::parse) ?: Ingester.today())
             println("costs: ${if (ok) "ok" else "errors: " + ci.error}")
         }
         "serve" -> {
