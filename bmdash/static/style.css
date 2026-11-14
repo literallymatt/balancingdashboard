@@ -52,6 +52,17 @@ button.btn:disabled { opacity: .5; cursor: default; }
 .chip button { border: 0; background: transparent; color: var(--ink2); cursor: pointer; font-size: 14px; line-height: 1; padding: 2px 6px; border-radius: 999px; }
 .chip button:hover { background: var(--border); }
 
+/* Shown after clicking into a chart: a clear way back out. */
+.zoom-trail { flex: 0 0 calc(100% + 40px); display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  margin: -10px -20px 0; padding: 8px 20px; background: var(--wash); border-bottom: 1px solid var(--border); }
+.zoom-trail .zoom-back { background: var(--ink); color: var(--surface); border-color: var(--ink); font-weight: 600; padding: 5px 12px; }
+.zoom-trail .zoom-back:hover { opacity: .85; }
+.zoom-trail .crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--ink2); }
+.zoom-trail .crumbs a { color: var(--s1); text-decoration: none; }
+.zoom-trail .crumbs a:hover { text-decoration: underline; }
+.zoom-trail .crumbs .sep { color: var(--muted); }
+.zoom-trail .crumbs b { color: var(--ink); font-weight: 600; }
+
 main { padding: 16px 20px 60px; max-width: 1700px; margin: 0 auto; }
 .grid { display: grid; gap: 14px; }
 .kpis { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); margin-bottom: 14px; }
@@ -113,6 +124,8 @@ td.wrap { white-space: normal; min-width: 150px; }
   nav a { flex: none; }
   nav a { padding: 8px 12px; }
   .filters { position: static; padding: 8px 12px; gap: 8px 10px; }
+  .zoom-trail { flex-basis: calc(100% + 24px); margin: -8px -12px 0; padding: 8px 12px; }
+  .zoom-trail .hint { display: none; }
   .seg button { padding: 8px 11px; }
   .filters label { display: flex; align-items: center; gap: 4px; }
   input[type=date] { padding: 6px 6px; max-width: 150px; }
