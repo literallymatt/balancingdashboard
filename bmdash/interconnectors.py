@@ -17,7 +17,8 @@ The trades are taken from the same monthly DISBSAD download as the Total costs t
 costs.fetch_bsad), so they cost no extra requests. Physical flows per link come from Elexon's half-hourly generation by
 fuel type (``FUELHH``: INTFR, INTIFA2, ... in MW, positive = import into GB).
 
-Stored as ``data/ic_trade.parquet`` (one row per settlement period x link x counterparty x SO flag x direction, summed)
+Stored as ``data/ic_trade.parquet`` (one row per settlement period x link x counterparty x SO flag x direction, summed,
+keeping the highest and lowest single-trade price so the tab can show marginal ("clearing") prices)
 and ``data/ic_flow_hh.parquet`` (one row per settlement period x link). Mirrored on the phone in Interconnectors.kt.
 """
 from __future__ import annotations
@@ -51,6 +52,8 @@ FUEL = {"INTFR": "IFA", "INTIFA2": "IFA2", "INTELEC": "ELEC", "INTNED": "BRTN", 
 TRADE_SCHEMA = pa.schema([
     ("settlement_date", pa.date32()), ("sp", pa.int16()), ("ic", pa.string()), ("party", pa.string()),
     ("kind", pa.string()), ("so_flag", pa.bool_()), ("volume", pa.float64()), ("cost", pa.float64()), ("n", pa.int32()),
+    # Highest and lowest price (cost / volume) of the priced trades summed into the row; null when none had a cost.
+    ("price_max", pa.float64()), ("price_min", pa.float64()),
 ])
 FLOW_SCHEMA = pa.schema([("settlement_date", pa.date32()), ("sp", pa.int16()), ("ic", pa.string()), ("flow_mw", pa.float64())])
 TRADE_PATH = store.DATA / "ic_trade.parquet"
@@ -73,7 +76,7 @@ class TradeSink:
     """Collects interconnector trades from DISBSAD records (already de-duplicated by the caller)."""
 
     def __init__(self) -> None:
-        self.acc: dict[tuple, list] = defaultdict(lambda: [0.0, 0.0, 0])
+        self.acc: dict[tuple, list] = defaultdict(lambda: [0.0, 0.0, 0, None, None])
 
     def add(self, r: dict) -> None:
         c = classify(r.get("assetId"))
@@ -83,13 +86,18 @@ class TradeSink:
         ic, kind = c
         vol = float(vol)
         key = (r["settlementDate"], int(r["settlementPeriod"]), ic, r.get("partyId") or "Unknown", kind, bool(r.get("soFlag")), vol > 0)
+        cost = float(r.get("cost") or 0)
         x = self.acc[key]
         x[0] += vol
-        x[1] += float(r.get("cost") or 0)
+        x[1] += cost
         x[2] += 1
+        if cost:
+            price = cost / vol
+            x[3] = price if x[3] is None else max(x[3], price)
+            x[4] = price if x[4] is None else min(x[4], price)
 
     def rows(self) -> list[tuple]:
-        return [(date.fromisoformat(k[0]), k[1], k[2], k[3], k[4], k[5], v[0], v[1], v[2]) for k, v in self.acc.items()]
+        return [(date.fromisoformat(k[0]), k[1], k[2], k[3], k[4], k[5], *v) for k, v in self.acc.items()]
 
 
 def fetch_flows(client: httpx.Client, start: date, end: date) -> list[tuple]:
@@ -115,14 +123,19 @@ def fetch_flows(client: httpx.Client, start: date, end: date) -> list[tuple]:
 
 # ---------------------------------------------------------------- stores
 
+def _current(path, schema: pa.Schema) -> bool:
+    """The file exists with every column of ``schema`` (files from older versions lack the price columns)."""
+    return path.exists() and set(schema.names) <= set(pq.read_schema(path).names)
+
+
 def held() -> bool:
-    """True once a first backfill has stored something (a refresh is then incremental)."""
-    return TRADE_PATH.exists() and pq.read_metadata(TRADE_PATH).num_rows > 0
+    """True once a first backfill has stored something in the current layout (a refresh is then incremental)."""
+    return _current(TRADE_PATH, TRADE_SCHEMA) and pq.read_metadata(TRADE_PATH).num_rows > 0
 
 
 def _merge(path, schema: pa.Schema, rows: list[tuple], start: date, end: date) -> None:
     """Replace what is held for settlement dates in [start, end] with ``rows``; keep everything else."""
-    old = pq.read_table(path) if path.exists() else schema.empty_table()
+    old = pq.read_table(path) if _current(path, schema) else schema.empty_table()
     keep = [r for r in zip(*(old[c].to_pylist() for c in schema.names)) if not (start <= r[0] <= end)]
     allrows = sorted(keep + rows, key=lambda r: (r[0], r[1], r[2]))
     cols = list(zip(*allrows)) if allrows else [[] for _ in schema]
@@ -138,6 +151,7 @@ def merge_flows(rows: list[tuple], start: date, end: date) -> None:
 
 
 def ensure_layout() -> None:
+    """Create empty files, or reset ones from an older layout (the next refresh then backfills them)."""
     for path, schema in ((TRADE_PATH, TRADE_SCHEMA), (FLOW_PATH, FLOW_SCHEMA)):
-        if not path.exists():
+        if not _current(path, schema):
             store._atomic_write(schema.empty_table(), path)

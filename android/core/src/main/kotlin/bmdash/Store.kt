@@ -43,13 +43,17 @@ object Store {
         // Interconnectors tab (see Interconnectors.kt): NESO's trades over the links (from BSAD), summed per settlement period
         // x link x counterparty x kind x SO flag x direction, and the physical flow per link and half-hour.
         """CREATE TABLE IF NOT EXISTS ic_trade (settlement_date TEXT NOT NULL, sp INTEGER, ic TEXT, party TEXT, kind TEXT,
-            so_flag INTEGER, volume REAL, cost REAL, n INTEGER)""",
+            so_flag INTEGER, volume REAL, cost REAL, n INTEGER, price_max REAL, price_min REAL)""",
         "CREATE INDEX IF NOT EXISTS ic_trade_date ON ic_trade(settlement_date)",
         """CREATE TABLE IF NOT EXISTS ic_flow (settlement_date TEXT NOT NULL, sp INTEGER NOT NULL, ic TEXT NOT NULL, flow_mw REAL,
             PRIMARY KEY (settlement_date, ic, sp)) WITHOUT ROWID""",
     )
 
     fun init(db: SqlDb) {
+        // ic_trade gained its price columns after the Interconnectors tab first shipped: drop an old copy, and the next costs
+        // refresh backfills it (Interconnectors.held is false for an empty table).
+        val cols = db.query("PRAGMA table_info(ic_trade)").map { it["name"] }
+        if (cols.isNotEmpty() && "price_max" !in cols) db.exec("DROP TABLE ic_trade")
         for (s in DDL) db.exec(s)
     }
 

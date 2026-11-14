@@ -48,22 +48,35 @@ object Interconnectors {
             if (vol == 0.0) return
             val key = listOf<Any>(r.str("settlementDate") ?: return, (r.long("settlementPeriod") ?: return), ic,
                 r.str("partyId") ?: "Unknown", kind, if (r["soFlag"] == true) 1L else 0L, vol > 0)
-            val x = acc.getOrPut(key) { DoubleArray(3) }
-            x[0] += vol; x[1] += r.dbl("cost") ?: 0.0; x[2] += 1.0
+            val cost = r.dbl("cost") ?: 0.0
+            val x = acc.getOrPut(key) { doubleArrayOf(0.0, 0.0, 0.0, Double.NaN, Double.NaN) }
+            x[0] += vol; x[1] += cost; x[2] += 1.0
+            if (cost != 0.0) {  // highest and lowest single-trade price in the row (NaN: no priced trade yet)
+                val price = cost / vol
+                if (x[3].isNaN() || price > x[3]) x[3] = price
+                if (x[4].isNaN() || price < x[4]) x[4] = price
+            }
         }
 
         fun merge(o: TradeSink) {
-            for ((k, v) in o.acc) { val x = acc.getOrPut(k) { DoubleArray(3) }; for (i in 0..2) x[i] += v[i] }
+            for ((k, v) in o.acc) {
+                val x = acc.getOrPut(k) { doubleArrayOf(0.0, 0.0, 0.0, Double.NaN, Double.NaN) }
+                for (i in 0..2) x[i] += v[i]
+                if (!v[3].isNaN() && (x[3].isNaN() || v[3] > x[3])) x[3] = v[3]
+                if (!v[4].isNaN() && (x[4].isNaN() || v[4] < x[4])) x[4] = v[4]
+            }
         }
 
-        fun rows(): List<List<Any?>> = acc.map { (k, v) -> listOf(k[0], k[1], k[2], k[3], k[4], k[5], v[0], v[1], v[2].toLong()) }
+        fun rows(): List<List<Any?>> = acc.map { (k, v) ->
+            listOf(k[0], k[1], k[2], k[3], k[4], k[5], v[0], v[1], v[2].toLong(), v[3].takeUnless { it.isNaN() }, v[4].takeUnless { it.isNaN() })
+        }
     }
 
     fun held(db: SqlDb): Boolean = db.query("SELECT 1 FROM ic_trade LIMIT 1").isNotEmpty()
 
     fun writeTrades(db: SqlDb, rows: List<List<Any?>>, start: LocalDate, end: LocalDate) = db.transaction {
         db.exec("DELETE FROM ic_trade WHERE settlement_date BETWEEN ? AND ?", listOf(start.toString(), end.toString()))
-        db.insertBatch("INSERT INTO ic_trade VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
+        db.insertBatch("INSERT INTO ic_trade VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
     }
 
     private class FlowAcc { val seen = HashSet<String>(); val rows = ArrayList<List<Any?>>() }
@@ -102,14 +115,33 @@ object Interconnectors {
         sum(CASE WHEN volume > 0 THEN volume END) AS buy_vol, sum(CASE WHEN volume < 0 THEN volume END) AS sell_vol,
         sum(CASE WHEN volume > 0 THEN cost END) AS buy_cost, sum(CASE WHEN volume < 0 THEN cost END) AS sell_cost,
         sum(CASE WHEN volume > 0 AND cost <> 0 THEN volume END) AS buy_pvol, sum(CASE WHEN volume < 0 AND cost <> 0 THEN volume END) AS sell_pvol,
-        sum(n) AS n_trades"""
+        sum(n) AS n_trades,
+        max(CASE WHEN volume > 0 THEN price_max END) AS buy_max, min(CASE WHEN volume > 0 THEN price_min END) AS buy_min,
+        max(CASE WHEN volume < 0 THEN price_max END) AS sell_max, min(CASE WHEN volume < 0 THEN price_min END) AS sell_min"""
     private const val FLOW = """count(*) AS n, avg(flow_mw) AS flow_avg, min(flow_mw) AS flow_min, max(flow_mw) AS flow_max,
         sum(CASE WHEN flow_mw > 0 THEN flow_mw * 0.5 ELSE 0 END) AS import_mwh,
         sum(CASE WHEN flow_mw < 0 THEN flow_mw * 0.5 ELSE 0 END) AS export_mwh"""
 
-    class Filter(p: Map<String, String>, from: String, to: String) {
+    /** Restrict to one time bucket: `at` is a bucket label from ic/agg at granularity `at_bucket` (mirrors api._at). */
+    class At(p: Map<String, String>, buckets: Map<String, String>) {
+        val sql: String
+        val params: List<Any?>
+        init {
+            val at = p["at"]
+            if (at.isNullOrEmpty()) { sql = ""; params = emptyList() } else {
+                val ab = p["at_bucket"] ?: "day"
+                val b = buckets[ab]?.takeIf { ab != "none" } ?: throw HttpError(400, "bad at_bucket")
+                val v: Any = if (ab == "tod") at.toLongOrNull() ?: throw HttpError(400, "bad at")
+                    else at.take(19).let { if (it.length == 10) it + "T00:00:00" else it }
+                sql = " AND $b = ?"; params = listOf(v)
+            }
+        }
+    }
+
+    class Filter(p: Map<String, String>, from: String, to: String, buckets: Map<String, String>) {
         val where = arrayListOf("settlement_date BETWEEN ? AND ?")
         val params = arrayListOf<Any?>(from, to)
+        private val at = At(p, buckets)
         init {
             for (dim in DIMS.keys) {
                 val vals = (p[dim] ?: "").split("|").filter { it.isNotEmpty() }
@@ -117,8 +149,9 @@ object Interconnectors {
                 where.add("${DIMS.getValue(dim)} IN (${vals.joinToString(",") { "?" }})")
                 params.addAll(vals)
             }
+            params.addAll(at.params)
         }
-        val sql get() = where.joinToString(" AND ")
+        val sql get() = where.joinToString(" AND ") + at.sql
     }
 
     fun meta(db: SqlDb, status: Map<String, Any?>): Map<String, Any?> {
@@ -146,13 +179,29 @@ object Interconnectors {
         return linkedMapOf("rows" to rows, "groups" to keep + (if (folded) listOf("Other (rest)") else emptyList()), "n_groups" to ranked.size)
     }
 
-    fun links(db: SqlDb, f: Filter): Map<String, Any?> {
+    fun links(db: SqlDb, f: Filter, at: At): Map<String, Any?> {
         val trades = db.query("SELECT ic, $MEASURES, count(DISTINCT party) AS n_parties FROM ic_trade WHERE ${f.sql} GROUP BY 1", f.params)
             .associateBy { it["ic"] as String }
-        val flows = db.query("SELECT ic, $FLOW FROM ic_flow WHERE settlement_date BETWEEN ? AND ? GROUP BY 1", f.params.take(2))
+        val flows = db.query("SELECT ic, $FLOW FROM ic_flow WHERE settlement_date BETWEEN ? AND ?${at.sql} GROUP BY 1", f.params.take(2) + at.params)
             .associateBy { it["ic"] as String }
         val rows = (trades.keys + flows.keys).toSortedSet().map { k ->
             LinkedHashMap<String, Any?>().apply { put("ic", k); trades[k]?.let { putAll(it) }; flows[k]?.let { putAll(it) } }
+        }
+        return mapOf("rows" to rows)
+    }
+
+    /** Trade prices per bucket and group, with the average half-hourly marginal ("clearing") price. Mirrors api.ic_prices. */
+    fun prices(db: SqlDb, f: Filter, b: String, group: String): Map<String, Any?> {
+        val g = if (group == "none") "'All'" else DIMS[group] ?: throw HttpError(400, "bad bucket or group")
+        val rows = db.query("SELECT $b AS t, $g AS g, $MEASURES FROM ic_trade WHERE ${f.sql} GROUP BY 1, 2 ORDER BY 1, 2", f.params)
+        val marg = db.query("""WITH h AS (SELECT settlement_date, sp, $g AS g,
+                max(CASE WHEN volume > 0 THEN price_max END) AS bm, min(CASE WHEN volume < 0 THEN price_min END) AS sm
+                FROM ic_trade WHERE ${f.sql} GROUP BY 1, 2, 3)
+            SELECT $b AS t, g, avg(bm) AS buy_clear, avg(sm) AS sell_clear, count(bm) AS buy_hh, count(sm) AS sell_hh FROM h GROUP BY 1, 2""", f.params)
+            .associateBy { "${it["t"]}|${it["g"]}" }
+        for (r in rows) {
+            val m = marg["${r["t"]}|${r["g"]}"]
+            (r as MutableMap<String, Any?>).apply { for (k in listOf("buy_clear", "sell_clear", "buy_hh", "sell_hh")) put(k, m?.get(k)) }
         }
         return mapOf("rows" to rows)
     }
