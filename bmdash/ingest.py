@@ -15,6 +15,8 @@ from .elexon import Elexon
 LONDON = ZoneInfo("Europe/London")
 # Indicative data is first published the day after and revised for a few days.
 SETTLE_DAYS = 5
+# Re-fetch not-yet-settled days at most this often: repeated ingests must not redo the slowest requests.
+REFETCH_AFTER_SECONDS = 6 * 3600
 PAIR_KEYS = [(f"{sign}{n}", n if sign == "positive" else -n)
              for sign in ("negative", "positive") for n in range(1, 7)]
 VOL_COL = {"Original": "volume_original", "Tagged": "volume_tagged",
@@ -230,7 +232,7 @@ def days_needed(a: date, b: date, force: bool = False) -> list[date]:
             out.append(d)
             continue
         settled_at = datetime(d.year, d.month, d.day, tzinfo=LONDON) + timedelta(days=SETTLE_DAYS)
-        if mtime < settled_at.timestamp():
+        if mtime < settled_at.timestamp() and time.time() - mtime > REFETCH_AFTER_SECONDS:
             out.append(d)
     return out
 
