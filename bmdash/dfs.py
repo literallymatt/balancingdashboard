@@ -220,7 +220,9 @@ def held() -> bool:
 def _merge(path, schema: pa.Schema, rows: list[tuple], start: date) -> None:
     """Replace what is held from ``start`` on with ``rows``; keep everything before."""
     old = pq.read_table(path) if path.exists() else schema.empty_table()
-    keep = [r for r in zip(*(old[c].to_pylist() for c in schema.names)) if r[0] < start]
+    # A file from an older layout lacks the newer columns: carry its rows with those left empty.
+    cols = [old[c].to_pylist() if c in old.column_names else [None] * old.num_rows for c in schema.names]
+    keep = [r for r in zip(*cols) if r[0] < start]
     allrows = sorted(keep + rows, key=lambda r: (r[0], r[1], r[2]))
     cols = list(zip(*allrows)) if allrows else [[] for _ in schema]
     store._atomic_write(pa.table({f.name: pa.array(c, type=f.type) for f, c in zip(schema, cols)}, schema=schema), path)
