@@ -15,7 +15,7 @@ const DIM_LABEL = { direction: 'Direction', tech: 'Technology', fuel: 'Fuel type
 const DIMS = Object.keys(DIM_LABEL);
 const state = { view: 'overview', unit: null, from: null, to: null, bucket: 'auto',
   metric: 'net', split: 'tech', bdim: 'party', filters: {}, day: null, bnd: null, cmetric: 'bind', cview: 'boundary', rkind: 'production', rsplit: 'gsp', rt: null, rgsp: null, rlong: null,
-  ic: null, icp: null, imetric: 'net', isplit: 'ic', ibd: 'party', imap: 'volume', ipdir: 'buy', it: null,
+  ic: null, icp: null, imetric: 'net', isplit: 'ic', ibd: 'party', imap: 'volume', ipdir: 'buy', it: null, iheat: 'clear',
   dmetric: 'proc', dsplit: 'none', dbd: 'party', dp: null, dev: null, ddir: null, dtag: null, dtest: null, dz: null, dzm: 'proc', dzev: null, dbin: null };
 let META = { days: [] };
 
@@ -27,7 +27,7 @@ function readHash() {
   const unitView = state.view === 'unit';
   Object.assign(state, { bucket: 'auto', metric: 'net', split: unitView ? 'direction' : 'tech', bdim: unitView ? 'pair' : 'party', day: null,
     bnd: null, cmetric: 'bind', cview: 'boundary', rkind: 'production', rsplit: 'gsp', rt: null, rgsp: null, rlong: null,
-    ic: null, icp: null, imetric: 'net', isplit: 'ic', ibd: 'party', imap: 'volume', ipdir: 'buy', it: null,
+    ic: null, icp: null, imetric: 'net', isplit: 'ic', ibd: 'party', imap: 'volume', ipdir: 'buy', it: null, iheat: 'clear',
     dmetric: 'proc', dsplit: 'none', dbd: 'party', dp: null, dev: null, ddir: null, dtag: null, dtest: null, dz: null, dzm: 'proc', dzev: null, dbin: null });
   const p = new URLSearchParams(qs || '');
   state.filters = {};
@@ -43,7 +43,7 @@ function writeHash(replace = false) {
   if (state.view === 'unit' && state.day) p.set('day', state.day);
   if (state.view === 'constraints') for (const k of ['bnd', 'cmetric', 'cview']) if (state[k]) p.set(k, state[k]);
   if (state.view === 'remit') for (const k of ['rkind', 'rsplit', 'rt', 'rgsp', 'rlong']) if (state[k]) p.set(k, state[k]);
-  if (state.view === 'interconnectors') for (const k of ['ic', 'icp', 'imetric', 'isplit', 'ibd', 'imap', 'ipdir', 'it']) if (state[k]) p.set(k, state[k]);
+  if (state.view === 'interconnectors') for (const k of ['ic', 'icp', 'imetric', 'isplit', 'ibd', 'imap', 'ipdir', 'it', 'iheat']) if (state[k]) p.set(k, state[k]);
   if (state.view === 'dfs') for (const k of ['dmetric', 'dsplit', 'dbd', 'dp', 'dev', 'ddir', 'dtag', 'dtest', 'dz', 'dzm', 'dzev', 'dbin']) if (state[k]) p.set(k, state[k]);
   for (const [k, v] of Object.entries(state.filters)) if (v.length) p.set('f.' + k, v.join('|'));
   const path = state.view === 'unit' ? `unit/${encodeURIComponent(state.unit)}` : state.view;
@@ -1704,8 +1704,11 @@ const IMETRICS = {
     help: 'Energy NESO bought (more flow into GB, or less out) plotted upward; energy it sold plotted downward.' },
   price: { label: 'Average trade price', fmt: price, line: true,
     help: 'Volume-weighted price of the trades (cost ÷ volume). SO-SO trades published without a cost are left out.' },
+  clear: { label: 'Clearing price', fmt: price, line: true, clear: true,
+    help: 'The marginal trade in each half-hour (the dearest NESO bought, or the cheapest it sold), averaged over the half-hours in each period.' },
 };
-const IMAP = [['volume', 'NESO traded volume'], ['net', 'Net trade cost'], ['flow', 'Physical flow']];
+const IMAP = [['volume', 'NESO traded volume'], ['net', 'Net trade cost'], ['clear', 'Clearing price'], ['flow', 'Physical flow']];
+const IHEAT = [['clear', 'Clearing price'], ['vwap', 'Average price'], ['net', 'Net traded volume']];
 let IMETA = { min: null, max: null }, NWE_MAP = null, icTimer = null;
 
 async function loadIMeta() { IMETA = await api('ic/meta'); }
@@ -1726,6 +1729,7 @@ async function viewInterconnectors(main) {
   const bd = ['party', 'ic', 'kind'].includes(state.ibd) ? state.ibd : 'party';
   const mapBy = IMAP.some(([k]) => k === state.imap) ? state.imap : 'volume';
   const pdir = state.ipdir === 'sell' ? 'sell' : 'buy';
+  const heatBy = IHEAT.some(([k]) => k === state.iheat) ? state.iheat : 'clear';
   const bucket = resolveBucket();
   const days = (parseDay(state.to) - parseDay(state.from)) / DAY + 1;
   const sel = [state.ic && `Interconnector: ${icName(state.ic)}`, state.icp && `Counterparty: ${state.icp}`].filter(Boolean);
@@ -1755,6 +1759,19 @@ async function viewInterconnectors(main) {
     </div>
   </div>
   <div class="card" style="margin-top:14px">
+    <div class="card-head"><div><h2 id="icHeatTitle">Day × settlement period</h2><div class="sub" id="icHeatNote"></div></div>
+      <div class="controls"><label class="small muted">Colour by ${select('iheat', IHEAT, heatBy)}</label></div></div>
+    <div class="chart tall" id="icHeat"></div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <div class="card-head"><div><h2 id="icWhoTitle">Who set the price</h2><div class="sub" id="icWhoNote"></div></div>
+      <div class="controls"><label class="small muted">Trades ${select('ipdir', [['buy', 'NESO bought'], ['sell', 'NESO sold']], pdir)}${tip('icclear')}</label></div></div>
+    <div class="grid cols2" style="margin-top:6px">
+      <div class="chart tall" id="icLadder"></div>
+      <div id="icWho"></div>
+    </div>
+  </div>
+  <div class="card" style="margin-top:14px">
     <div class="card-head">
       <div><h2>${esc(IMETRICS[metric].label)} over time</h2><div class="sub" id="icTimeNote"></div></div>
       <div class="controls">
@@ -1769,7 +1786,7 @@ async function viewInterconnectors(main) {
   <div class="grid cols2">
     <div class="card">
       <div class="card-head"><div><h2>Trade prices${tip('icclear')}</h2><div class="sub" id="icPriceNote"></div></div>
-        <div class="controls"><label class="small muted">Trades ${select('ipdir', [['buy', 'NESO bought'], ['sell', 'NESO sold']], pdir)}</label></div></div>
+        <div class="controls"><label class="small muted">Trades ${select('ipdir2', [['buy', 'NESO bought'], ['sell', 'NESO sold']], pdir)}</label></div></div>
       <div class="chart tall" id="icPrice"></div>
     </div>
     <div class="card">
@@ -1789,10 +1806,6 @@ async function viewInterconnectors(main) {
     </div>
   </div>
   <div class="card" style="margin-top:14px">
-    <div class="card-head"><div><h2>Net traded volume, day × settlement period</h2><div class="sub">Each cell is one half-hour. Red: NESO bought (into GB); blue: NESO sold. Click a half-hour to show it on the map and in the price details.</div></div></div>
-    <div class="chart tall" id="icHeat"></div>
-  </div>
-  <div class="card" style="margin-top:14px">
     <h2>About this data</h2>
     <div class="small muted" style="line-height:1.55;margin-top:6px">
       <b style="color:var(--ink)">Trades</b>: interconnectors do not take part in the Balancing Mechanism, so NESO balances across them with trades outside it, which Elexon publishes as Balancing Services Adjustment Data (BSAD). <i>Counterparty trades</i> buy or sell energy from a trader for delivery over one link (the trader's interconnector unit, such as IFG-DSKC1 for Danske Commodities on IFA, names the link). <i>SO-SO trades</i> are with the neighbouring system operator (RTE, Statnett, EirGrid, SONI) and are often published without a cost, so they count towards volumes but not prices. <i>SO-flagged</i> trades were for a system reason (for example a constraint) rather than the national energy balance.<br>
@@ -1802,7 +1815,8 @@ async function viewInterconnectors(main) {
     <div class="small muted" id="icMeta" style="margin-top:8px"></div>
     <button type="button" class="btn" id="conRefresh" style="margin-top:8px">Refresh data</button>
   </div>`;
-  for (const k of ['imetric', 'isplit', 'ibd', 'imap', 'ipdir']) $('#' + k).onchange = (e) => update({ [k]: e.target.value }, true);
+  for (const k of ['imetric', 'isplit', 'ibd', 'imap', 'ipdir', 'iheat']) $('#' + k).onchange = (e) => update({ [k]: e.target.value }, true);
+  $('#ipdir2').onchange = (e) => update({ ipdir: e.target.value }, true);
   $('#icClear')?.addEventListener('click', () => update({ ic: null, icp: null }));
   $('#icToggle').onclick = () => { const t = $('#icTimeTable'); t.hidden = !t.hidden; $('#icTime').hidden = !t.hidden; $('#icToggle').textContent = t.hidden ? 'Table' : 'Chart'; if (t.hidden) charts.get($('#icTime'))?.resize(); };
   const upd = IMETA.updated_at ? new Date(IMETA.updated_at * 1000).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : null;
@@ -1810,11 +1824,37 @@ async function viewInterconnectors(main) {
   wireConRefresh();
 
   // The time slots of the current granularity: the slider steps through them and a click on any time chart picks one.
-  const [agg, prices, flow] = await Promise.all([
-    api('ic/agg', icParams({ bucket, group: split, top: 8, rank: metric === 'volume' ? 'vol' : 'cash' })),
+  // Clearing prices per group come from ic/prices (they are averages of half-hourly maxima, so cannot be folded into
+  // "Other"): keep the 8 groups that traded most in the chosen direction.
+  const timeData = IMETRICS[metric].clear
+    ? api('ic/prices', icParams({ bucket, group: split })).then((d) => {
+      const vol = {};
+      for (const r of d.rows) vol[r.g] = (vol[r.g] || 0) + Math.abs(n0(r[pdir + '_pvol']));
+      const ranked = Object.keys(vol).filter((g) => vol[g]).sort((a, b) => vol[b] - vol[a]);
+      return { rows: d.rows, groups: ranked.slice(0, 8), n_groups: ranked.length };
+    })
+    : api('ic/agg', icParams({ bucket, group: split, top: 8, rank: metric === 'volume' ? 'vol' : 'cash' }));
+  const [agg, prices, flow, hh, perIc] = await Promise.all([
+    timeData,
     api('ic/prices', icParams({ bucket, group: 'none' })),
     api('ic/flow', { from: state.from, to: state.to, bucket, ic: state.ic || '' }),
+    days > 400 ? null : bucket === 'sp' ? null : api('ic/prices', icParams({ bucket: 'sp', group: 'none' })),
+    days > 62 ? null : api('ic/prices', icParams({ bucket: 'sp', group: 'ic' })),
   ]);
+  // Half-hourly prices for the grid and the peak clearing price (the period prices already are, when half-hourly).
+  const half = days > 400 ? null : (hh || prices).rows;
+  // Which link set each half-hour's clearing price (ties: every link at that price), for ranges up to two months.
+  const setters = new Map();
+  if (perIc) {
+    const bestAt = new Map();
+    for (const r of perIc.rows) {
+      const v = r[pdir + '_clear'];
+      if (v == null) continue;
+      const b = bestAt.get(r.t);
+      if (b == null || (pdir === 'buy' ? v > b : v < b)) { bestAt.set(r.t, v); setters.set(r.t, [r.g]); } else if (v === b) setters.get(r.t).push(r.g);
+    }
+  }
+  const peak = half ? half.filter((r) => r[pdir + '_clear'] != null).sort((a, b) => (pdir === 'buy' ? b.buy_clear - a.buy_clear : a.sell_clear - b.sell_clear))[0] : null;
   const cats = bucket === 'none' ? [] : allBuckets(bucket, [...agg.rows, ...prices.rows, ...flow.rows]);
   const idx = new Map(cats.map((t, i) => [String(t), i]));
   let k = state.it != null && idx.has(String(state.it)) ? idx.get(String(state.it)) : null;
@@ -1827,19 +1867,24 @@ async function viewInterconnectors(main) {
   const drawSel = async () => {
     const my = ++ticket;
     const at = k == null ? {} : { at: String(cats[k]), at_bucket: bucket };
-    const [links, byIc, all] = await Promise.all([
+    const [links, byIc, all, who] = await Promise.all([
       api('ic/links', icParams({ ic: '', ...at })),
       api('ic/prices', icParams({ ic: '', bucket: 'none', group: 'ic', ...at })),
       api('ic/prices', icParams({ bucket: 'none', group: 'none', ...at })),
+      api('ic/trades', icParams({ dir: pdir, ...at })),
     ]);
     if (my !== ticket || !$('#icMap')?.isConnected) return;
-    icKpis($('#icKpis'), links.rows, all.rows[0] || {}, when());
-    await icMap($('#icMap'), links.rows, mapBy, pick, when());
+    icKpis($('#icKpis'), links.rows, all.rows[0] || {}, when(), peak, pdir, bucket);
+    const peakCard = $('#icPeak');
+    if (peakCard && peak) peakCard.onclick = () => (bucket === 'sp' && idx.has(String(peak.t)) ? choose(idx.get(String(peak.t)))
+      : update({ from: peak.t.slice(0, 10), to: peak.t.slice(0, 10), bucket: 'auto', it: peak.t }));
+    icWho($('#icLadder'), $('#icWho'), who.rows, all.rows[0] || {}, pdir, when());
+    await icMap($('#icMap'), links.rows, mapBy, pick, when(), { prices: byIc.rows, who: who.rows, dir: pdir });
     $('#icTableTitle').textContent = `Interconnectors, ${when()}`;
     icTable($('#icTable'), links.rows, pick);
     icPriceTable($('#icPriceTable'), byIc.rows, all.rows[0], pdir, when());
   };
-  const markAll = () => { for (const id of ['#icTime', '#icPrice', '#icFlow']) { const c = charts.get($(id)); if (c?.getOption()?.series?.length) c.setOption({ series: [{ markLine: mark() }] }); } };
+  const markAll = () => { for (const id of ['#icTime', '#icPrice', '#icFlow', '#icHeat']) { if (id === '#icHeat' && !$(id).dataset.bars) continue; const c = charts.get($(id)); if (c?.getOption()?.series?.length) c.setOption({ series: [{ markLine: mark() }] }); } };
   const slider = $('#icSlider');
   slider.max = String(Math.max(0, cats.length - 1));
   const go = (i, quiet = false) => {
@@ -1882,11 +1927,11 @@ async function viewInterconnectors(main) {
   icFlow($('#icFlow'), flow.rows, cats, bucket, choose, mark);
   loading($('#icBd'), () => icBreakdown($('#icBd'), bd, metric));
   if (days > 400) $('#icHeat').innerHTML = '<div class="empty">Narrow the range to 400 days or fewer to see the half-hourly grid.</div>';
-  else loading($('#icHeat'), () => icHeat($('#icHeat'), bucket, (t) => (idx.has(t) ? choose(idx.get(t)) : null)));
+  else loading($('#icHeat'), () => icHeat($('#icHeat'), bucket, heatBy, pdir, half, setters, (t) => (idx.has(t) ? choose(idx.get(t)) : null), mark));
   go(k);
 }
 
-function icKpis(el, links, all, when) {
+function icKpis(el, links, all, when, peak, dir, bucket) {
   const mine = state.ic ? links.filter((r) => r.ic === state.ic) : links;
   const sum = (k) => mine.reduce((a, r) => a + n0(r[k]), 0);
   const busiest = [...links].sort((a, b) => icGross(b) - icGross(a))[0];
@@ -1895,42 +1940,56 @@ function icKpis(el, links, all, when) {
   el.innerHTML = [
     kpi(`Net trade cost, ${when}`, gbp(icNet(a)), `${nf(0).format(n0(a.n_trades))} trade records`, 'ic'),
     kpi('NESO bought', mwh(a.buy_vol), a.buy_pvol ? `${gbp(a.buy_cost)} @ ${price(ratio(a.buy_cost, a.buy_pvol))} average` : 'no priced trades', 'icprice'),
-    kpi('Highest price paid', price(a.buy_max), a.buy_clear != null ? `clearing price ${price(a.buy_clear)}${a.buy_hh > 1 ? ' on average' : ''}` : 'no priced purchases', 'icclear'),
+    kpi(`Clearing price${a.buy_hh > 1 ? ' (average)' : ''}`, price(a.buy_clear), a.buy_max != null ? `highest trade ${price(a.buy_max)}` : 'no priced purchases', 'icclear'),
     kpi('NESO sold', mwh(a.sell_vol), a.sell_pvol ? `${gbp(a.sell_cost)} @ ${price(ratio(a.sell_cost, a.sell_pvol))} average` : 'no priced trades', 'icprice'),
     state.ic ? kpi('Share of all interconnector trades', pct(ratio(sum('buy_vol') - sum('sell_vol'), links.reduce((s, r) => s + icGross(r), 0))), 'of traded volume, both directions')
       : kpi('Busiest interconnector', busiest && icGross(busiest) ? icName(busiest.ic) : '–', busiest && icGross(busiest) ? `${mwh(icGross(busiest))} traded · ${IC[busiest.ic]?.country || ''}` : 'no trades', 'icmap'),
     kpi(state.ic ? 'Average physical flow' : 'Net physical import', hh ? mwc(flowMwh / (hh / 2)) : '–', hh ? `${mwh(sum('import_mwh'))} in, ${mwh(-sum('export_mwh'))} out` : 'no flow data', 'icflow'),
   ].join('');
+  // The range's peak half-hour (for the direction picked): click to show it.
+  if (peak) {
+    el.insertAdjacentHTML('afterbegin', kpi(dir === 'buy' ? 'Peak clearing price' : 'Lowest clearing price (sales)', price(peak[dir + '_clear']),
+      `${bucketLabel(peak.t, 'sp')} · click to show it`, 'icclear').replace('class="card kpi"', `class="card kpi click" id="icPeak" title="Show ${esc(bucketLabel(peak.t, 'sp'))} on the map and in Who set the price${bucket === 'sp' ? '' : ' (zooms to that day)'}"`));
+  }
 }
 
 /** NW Europe with each interconnector drawn from its GB landing point to the far end. */
-async function icMap(el, links, by, onPick, when = 'the selected range') {
+async function icMap(el, links, by, onPick, when = 'the selected range', px = {}) {
   if (!NWE_MAP) { NWE_MAP = await (await fetch('/static/vendor/nweurope.json')).json(); echarts.registerMap('nwe', NWE_MAP); }
   const byIc = new Map(links.map((r) => [r.ic, r]));
   const pos = css('--div-pos'), neg = css('--div-neg'), mid = css('--other');
-  const val = (r) => (by === 'flow' ? (r.n ? (n0(r.import_mwh) + n0(r.export_mwh)) / (r.n / 2) : 0) : by === 'net' ? icNet(r) : icGross(r));
+  const dir = px.dir || 'buy', clearBy = new Map((px.prices || []).map((r) => [r.g, r[dir + '_clear']]));
+  // How many half-hours each link set the clearing price in (ties count for each link).
+  const setBy = new Map();
+  for (const w of px.who || []) setBy.set(w.ic, (setBy.get(w.ic) || 0) + n0(w.n_marginal));
+  const val = (r) => (by === 'clear' ? clearBy.get(r.ic) ?? 0 : by === 'flow' ? (r.n ? (n0(r.import_mwh) + n0(r.export_mwh)) / (r.n / 2) : 0) : by === 'net' ? icNet(r) : icGross(r));
   // Direction of each link: into GB when NESO bought more than it sold (or, for flows, when it imported).
-  const into = (r) => (by === 'flow' ? val(r) >= 0 : n0(r.buy_vol) + n0(r.sell_vol) >= 0);
-  const hi = Math.max(1e-9, ...IC_ORDER.map((k) => Math.abs(val(byIc.get(k) || {}))));
-  const fmt = by === 'flow' ? mwc : by === 'net' ? gbp : mwh;
+  const into = (r) => (by === 'clear' ? dir === 'buy' : by === 'flow' ? val(r) >= 0 : n0(r.buy_vol) + n0(r.sell_vol) >= 0);
+  const hi = Math.max(1e-9, ...IC_ORDER.map((k) => Math.abs(val(byIc.get(k) || { ic: k }))));
+  const fmt = by === 'clear' ? price : by === 'flow' ? mwc : by === 'net' ? gbp : mwh;
+  const setter = by === 'clear' ? [...setBy.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] : null;
   const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
   const lines = [], ends = [];
   for (const k of IC_ORDER) {
     const L = IC[k], r = byIc.get(k) || { ic: k }, v = val(r), t = Math.abs(v) / hi, dim = state.ic && state.ic !== k;
     const active = Math.abs(v) > 0;
     const inward = into(r);
-    const color = !active ? mid : by === 'net' ? (v >= 0 ? pos : neg) : inward ? pos : neg;
+    const color = !active ? mid : by === 'clear' ? mix(css('--seq-lo'), css('--seq-hi'), 0.25 + 0.75 * t) : by === 'net' ? (v >= 0 ? pos : neg) : inward ? pos : neg;
     lines.push({ name: k, r, v, coords: inward ? [L.far, L.gb] : [L.gb, L.far],
       lineStyle: { color, width: active ? 2 + 9 * Math.sqrt(t) : 1.5, opacity: dim ? 0.25 : 0.9, curveness: L.bend, type: active ? 'solid' : 'dashed', cap: 'round' } });
     ends.push({ name: k, r, v, value: L.far, itemStyle: { color: css(L.col), opacity: dim ? 0.35 : 1 } },
       { name: k, r, v, value: L.gb, gb: true, itemStyle: { color: css('--ink2'), opacity: dim ? 0.35 : 1 } });
   }
-  const top = new Set([...lines].filter((l) => Math.abs(l.v) > 0).sort((a, b) => Math.abs(b.v) - Math.abs(a.v)).slice(0, 5).map((l) => l.name));
+  const top = new Set([...lines].filter((l) => Math.abs(l.v) > 0).sort((a, b) => Math.abs(b.v) - Math.abs(a.v)).slice(0, by === 'clear' ? 10 : 5).map((l) => l.name));
   if (state.ic) top.add(state.ic);
-  const label = by === 'flow' ? 'Average physical flow' : by === 'net' ? 'Net trade cost' : 'Volume NESO traded (bought + sold)';
-  $('#icMapNote').textContent = `${label}, ${when}. Line width is the size; ${by === 'net' ? 'red: NESO paid, blue: NESO received' : 'arrows point the way the energy went'}.`;
+  const label = by === 'clear' ? `Clearing price of energy NESO ${dir === 'buy' ? 'bought' : 'sold'}` : by === 'flow' ? 'Average physical flow' : by === 'net' ? 'Net trade cost' : 'Volume NESO traded (bought + sold)';
+  $('#icMapNote').textContent = by === 'clear'
+    ? `${label} on each link, ${when}. Darker and wider is ${dir === 'buy' ? 'dearer' : 'higher'}${setter ? `; ★ ${icName(setter)} set the clearing price${setBy.get(setter) > 1 ? ` most often (${setBy.get(setter)} half-hours)` : ''}` : ''}.`
+    : `${label}, ${when}. Line width is the size; ${by === 'net' ? 'red: NESO paid, blue: NESO received' : 'arrows point the way the energy went'}.`;
   const sw = (c, t) => `<span style="display:inline-flex;align-items:center;gap:5px"><span style="width:18px;height:4px;border-radius:2px;background:${c}"></span>${esc(t)}</span>`;
-  $('#icKey').innerHTML = by === 'net' ? sw(pos, 'NESO paid (net)') + sw(neg, 'NESO received (net)') + sw(mid, 'No trades')
+  const lo = Math.min(hi, ...[...clearBy.values()].filter((v) => v != null));
+  $('#icKey').innerHTML = by === 'clear' ? `<span>${esc(price(lo))}</span><span style="width:160px;height:10px;border-radius:2px;background:linear-gradient(90deg,${mix(css('--seq-lo'), css('--seq-hi'), 0.25)},${css('--seq-hi')})"></span><span>${esc(price(hi))}</span>` + sw(mid, 'No priced trades')
+    : by === 'net' ? sw(pos, 'NESO paid (net)') + sw(neg, 'NESO received (net)') + sw(mid, 'No trades')
     : by === 'flow' ? sw(pos, 'Net import into GB') + sw(neg, 'Net export from GB') : sw(pos, 'NESO mostly bought (into GB)') + sw(neg, 'NESO mostly sold (out of GB)') + sw(mid, 'No trades');
   const tipFor = (r) => {
     const L = IC[r.ic];
@@ -1938,6 +1997,7 @@ async function icMap(el, links, by, onPick, when = 'the selected range') {
       `NESO bought ${mwh(r.buy_vol)}${r.buy_pvol ? ` @ ${price(ratio(r.buy_cost, r.buy_pvol))}` : ''}`,
       `NESO sold ${mwh(r.sell_vol)}${r.sell_pvol ? ` @ ${price(ratio(r.sell_cost, r.sell_pvol))}` : ''}`,
       `Net trade cost ${gbp(icNet(r))} · ${nf(0).format(n0(r.n_trades))} trade records`,
+      clearBy.get(r.ic) != null ? `Clearing price (${dir === 'buy' ? 'bought' : 'sold'}) ${price(clearBy.get(r.ic))}${setBy.get(r.ic) ? ` · set the overall clearing price in ${setBy.get(r.ic)} half-hour${setBy.get(r.ic) === 1 ? '' : 's'}` : ''}` : '',
       r.n ? `Physical flow ${mwc((n0(r.import_mwh) + n0(r.export_mwh)) / (r.n / 2))} on average (${mwh(r.import_mwh)} in, ${mwh(-n0(r.export_mwh))} out)` : 'No flow data']);
   };
   const o = {
@@ -1954,7 +2014,7 @@ async function icMap(el, links, by, onPick, when = 'the selected range') {
       { type: 'scatter', coordinateSystem: 'geo', data: ends, zlevel: 2, symbolSize: (v, p) => (p.data.gb ? 5 : 9),
         itemStyle: { borderColor: css('--surface'), borderWidth: 2 }, labelLayout: { hideOverlap: true },
         label: { show: true, position: 'right', fontSize: 11, color: css('--ink2'),
-          formatter: (p) => (!p.data.gb ? `${icName(p.name)}${top.has(p.name) ? ` ${fmt(p.data.v)}` : ''}` : '') } },
+          formatter: (p) => (!p.data.gb ? `${p.name === setter ? '★ ' : ''}${icName(p.name)}${top.has(p.name) ? ` ${fmt(p.data.v)}` : ''}` : '') } },
     ],
   };
   const c = chart(el);
@@ -1994,12 +2054,15 @@ function icTime(el, tableEl, data, cats, bucket, metric, split, onPick, mark) {
   const o = baseOption();
   let series = [];
   if (m.line) {
-    const buyP = (r) => ratio(r.buy_cost, r.buy_pvol), sellP = (r) => ratio(r.sell_cost, r.sell_pvol);
+    const dir = state.ipdir === 'sell' ? 'sell' : 'buy';
+    const buyP = m.clear ? (r) => r.buy_clear : (r) => ratio(r.buy_cost, r.buy_pvol), sellP = m.clear ? (r) => r.sell_clear : (r) => ratio(r.sell_cost, r.sell_pvol);
+    const groupP = split === 'direction' ? (r) => buyP(r) ?? sellP(r) : m.clear && dir === 'sell' ? sellP : buyP;
     const defs = split === 'none' ? [['NESO bought', buyP, css('--div-pos'), 'All'], ['NESO sold', sellP, css('--div-neg'), 'All']]
-      : groups.map((g) => [icLabel(split, g), split === 'direction' ? (r) => buyP(r) ?? sellP(r) : buyP, icColour(split, g), g]);
+      : groups.map((g) => [icLabel(split, g), groupP, icColour(split, g), g]);
     series = defs.map(([name, f, color, g]) => ({ name, type: 'line', color, lineStyle: { width: 2 }, symbol: 'circle', symbolSize: cats.length > 60 ? 0 : 6,
       connectNulls: false, data: (byG.get(g) || []).map((r) => (r ? f(r) : null)) }));
-    $('#icTimeNote').textContent = m.help + (split !== 'none' && split !== 'direction' ? ' Showing the price of energy NESO bought, per group.' : '') + ' Click a period to show it on the map.';
+    $('#icTimeNote').textContent = m.help + (split !== 'none' && split !== 'direction' ? ` Showing the price of energy NESO ${m.clear && dir === 'sell' ? 'sold' : 'bought'}, per group${m.clear ? ' ("Trades" picks bought or sold)' : ''}.` : '')
+      + (m.clear && data.n_groups > 8 ? ` The 8 of ${data.n_groups} groups that traded most are shown.` : '') + ' Click a period to show it on the map.';
   } else {
     const gap = cats.length <= 70;
     for (const g of groups) for (const part of m.parts) {
@@ -2181,36 +2244,52 @@ function icFlow(el, rows, cats, bucket, onPick, mark) {
   icClickable(el, o, cats, onPick);
 }
 
-/** Day x settlement period grid of NESO's net traded volume (diverging: bought red, sold blue). A click shows that
- *  half-hour on the map: directly when the tab is already half-hourly, otherwise by zooming to the day first. */
-async function icHeat(el, bucket, onSelect) {
-  const data = await api('ic/agg', icParams({ bucket: 'sp', group: 'none' }));
+/** Day x settlement period grid, coloured by the half-hour's clearing price, average price or net traded volume. A click
+ *  shows that half-hour on the map: directly when the tab is already half-hourly, otherwise by zooming to the day first. */
+async function icHeat(el, bucket, by, dir, half, setters, onSelect, mark) {
+  const word = dir === 'buy' ? 'bought' : 'sold';
+  const isPrice = by !== 'net';
+  const rows = isPrice ? half : (await api('ic/agg', icParams({ bucket: 'sp', group: 'none' }))).rows;
+  const val = by === 'clear' ? (r) => r[dir + '_clear'] : by === 'vwap' ? (r) => ratio(r[dir + '_cost'], r[dir + '_pvol']) : (r) => n0(r.buy_vol) + n0(r.sell_vol) || null;
+  const who = (t) => (setters.get(t) || []).map(icName).join(' and ');
+  delete el.dataset.bars;
+  if (by === 'clear' && bucket === 'sp') return icClearBars(el, rows, dir, setters, onSelect, mark);
+  $('#icHeatTitle').textContent = `${by === 'clear' ? 'Clearing price' : by === 'vwap' ? 'Average price' : 'Net traded volume'}, day × settlement period`;
+  $('#icHeatNote').textContent = (isPrice ? `Energy NESO ${word}${state.ic ? ` on ${icName(state.ic)}` : ''}; darker is ${dir === 'buy' ? 'dearer' : 'higher'}, blank means no priced trades. `
+    : 'Red: NESO bought (into GB); blue: NESO sold. ') + 'Click a half-hour to see who set the price and show it on the map.';
   const days = [];
   for (let d = state.from; d <= state.to; d = addDays(d, 1)) days.push(d);
   const di = new Map(days.map((d, i) => [d, i]));
   // The sp bucket is the settlement date plus 30 minutes per period, so the time of day gives the period back.
-  const pts = data.rows.map((r) => [di.get(r.t.slice(0, 10)), (+r.t.slice(11, 13)) * 2 + (+r.t.slice(14, 16) >= 30 ? 1 : 0), n0(r.buy_vol) + n0(r.sell_vol)])
-    .filter((p) => p[0] != null && p[2]);
-  const vals = pts.map((p) => Math.abs(p[2])).sort((a, b) => a - b);
-  const M = vals[Math.min(vals.length - 1, Math.floor(0.98 * vals.length))] || 1;
+  const pts = rows.map((r) => [di.get(r.t.slice(0, 10)), (+r.t.slice(11, 13)) * 2 + (+r.t.slice(14, 16) >= 30 ? 1 : 0), val(r), r])
+    .filter((p) => p[0] != null && p[2] != null);
+  const vals = pts.map((p) => (isPrice ? p[2] : Math.abs(p[2]))).sort((a, b) => a - b);
+  const q = (f) => vals[Math.min(vals.length - 1, Math.max(0, Math.floor(f * vals.length)))];
+  const lo = isPrice ? q(0.02) ?? 0 : null, hi = isPrice ? q(0.98) ?? 1 : q(0.98) || 1;
   const key = (p) => new Date(Date.parse(days[p[0]] + 'T00:00:00Z') + p[1] * 1800000).toISOString().slice(0, 19);
   const o = baseOption();
   o.legend.show = false;
   o.grid = { left: 8, right: 16, top: 8, bottom: 44, containLabel: true };
   o.tooltip = { ...o.tooltip, trigger: 'item', formatter: (p) => {
-    const d = new Date(days[p.value[0]] + 'T00:00:00Z');
-    return tipHtml(`${DOW[d.getUTCDay()]} ${d.getUTCDate()} ${MON[d.getUTCMonth()]} · SP ${p.value[1] + 1} (${spTime(p.value[1] + 1)})`,
-      [{ name: p.value[2] >= 0 ? 'NESO bought (net)' : 'NESO sold (net)', value: p.value[2], color: p.color }], mwh)
-      + clickHint(bucket === 'sp' ? 'Click to show this half-hour on the map and in the price details' : 'Click to zoom to this day and show this half-hour on the map');
+    const d = new Date(days[p.value[0]] + 'T00:00:00Z'), r = p.data.r;
+    const title = `${DOW[d.getUTCDay()]} ${d.getUTCDate()} ${MON[d.getUTCMonth()]} · SP ${p.value[1] + 1} (${spTime(p.value[1] + 1)})`;
+    const lines = isPrice ? [`Clearing price ${price(r[dir + '_clear'])}${who(r.t) ? `, set on ${who(r.t)}` : ''}`, `Average ${price(ratio(r[dir + '_cost'], r[dir + '_pvol']))} · lowest ${price(r[dir + '_min'])}`,
+      `${mwh(r[dir + '_vol'])} ${word}`] : [`${p.value[2] >= 0 ? 'NESO bought (net)' : 'NESO sold (net)'} ${mwh(p.value[2])}`];
+    return tipLines(title, lines) + clickHint(bucket === 'sp' ? 'Click to see who set the price in this half-hour' : 'Click to zoom to this day and see who set the price in this half-hour');
   } };
   o.xAxis = { ...o.xAxis, type: 'category', data: days.map((d) => `${+d.slice(8)} ${MON[+d.slice(5, 7) - 1]}`), splitArea: { show: false } };
   o.yAxis = { ...o.yAxis, type: 'category', data: Array.from({ length: 50 }, (_, i) => spTime(i + 1)), inverse: true,
     axisLabel: { ...o.yAxis.axisLabel, interval: 5 }, splitLine: { show: false }, max: 47 };
-  o.visualMap = { type: 'continuous', orient: 'horizontal', left: 'center', bottom: 0, itemWidth: 10, itemHeight: 160, min: -M, max: M, calculable: false, dimension: 2,
-    text: [`${mwh(M)} bought`, `${mwh(M)} sold`], textStyle: { color: css('--muted'), fontSize: 11 },
-    inRange: { color: [css('--div-neg'), css('--div-mid'), css('--div-pos')] } };
-  o.series = [{ type: 'heatmap', data: pts, progressive: 0, itemStyle: days.length <= 45 ? { borderColor: css('--surface'), borderWidth: 1 } : {},
+  o.visualMap = isPrice
+    ? { type: 'continuous', orient: 'horizontal', left: 'center', bottom: 0, itemWidth: 10, itemHeight: 160, min: lo, max: Math.max(hi, lo + 1), calculable: false, dimension: 2,
+      text: [price(hi), price(lo)], textStyle: { color: css('--muted'), fontSize: 11 }, inRange: { color: [css('--seq-lo'), css('--seq-hi')] } }
+    : { type: 'continuous', orient: 'horizontal', left: 'center', bottom: 0, itemWidth: 10, itemHeight: 160, min: -hi, max: hi, calculable: false, dimension: 2,
+      text: [`${mwh(hi)} bought`, `${mwh(hi)} sold`], textStyle: { color: css('--muted'), fontSize: 11 },
+      inRange: { color: [css('--div-neg'), css('--div-mid'), css('--div-pos')] } };
+  o.series = [{ type: 'heatmap', data: pts.map((p) => ({ value: p.slice(0, 3), r: p[3] })), progressive: 0,
+    itemStyle: days.length <= 45 ? { borderColor: css('--surface'), borderWidth: 1 } : {},
     emphasis: { itemStyle: { borderColor: css('--ink'), borderWidth: 1 } } }];
+  if (!pts.length) { el.innerHTML = `<div class="empty">No ${isPrice ? `priced trades where NESO ${word} energy` : 'trades'} in this range.</div>`; charts.delete(el); return; }
   const c = chart(el);
   c.setOption(o, true);
   el.style.cursor = 'pointer';
@@ -2219,6 +2298,92 @@ async function icHeat(el, bucket, onSelect) {
     if (bucket === 'sp') onSelect(t);
     else update({ from: days[p.value[0]], to: days[p.value[0]], bucket: 'auto', it: t });
   });
+}
+
+/** One or two days: the half-hourly clearing price as bars, each coloured by the link that set it. Click a bar to see who
+ *  set the price in that half-hour. */
+function icClearBars(el, rows, dir, setters, onSelect, mark) {
+  const word = dir === 'buy' ? 'bought' : 'sold';
+  $('#icHeatTitle').textContent = 'Clearing price per half-hour';
+  $('#icHeatNote').textContent = `Energy NESO ${word}${state.ic ? ` on ${icName(state.ic)}` : ''}. Each bar is coloured by the interconnector that set the price. Click a half-hour to see who set it and show it on the map.`;
+  const cats = allBuckets('sp', rows), idx = new Map(cats.map((t, i) => [String(t), i]));
+  const at = new Array(cats.length).fill(null);
+  for (const r of rows) if (idx.has(String(r.t)) && r[dir + '_clear'] != null) at[idx.get(String(r.t))] = r;
+  if (!at.some(Boolean)) { el.innerHTML = `<div class="empty">No priced trades where NESO ${word} energy in this range.</div>`; charts.delete(el); return; }
+  // One series per setting link so the legend names them; a tie is drawn in the first link's colour.
+  const links = IC_ORDER.filter((k) => cats.some((t) => setters.get(String(t))?.[0] === k));
+  const o = baseOption();
+  o.xAxis = { ...o.xAxis, type: 'category', data: cats.map((t) => bucketLabel(t, 'sp')) };
+  o.yAxis = { ...o.yAxis, type: 'value', axisLabel: { ...o.yAxis.axisLabel, formatter: (v) => price(v).replace('/MWh', '') } };
+  o.tooltip = { ...o.tooltip, axisPointer: { type: 'shadow', shadowStyle: { color: css('--wash') } }, formatter: (ps) => {
+    const i = ps[0].dataIndex, r = at[i];
+    if (!r) return tipLines(ps[0].axisValueLabel, ['No priced trades']);
+    const ics = setters.get(String(cats[i])) || [];
+    return tipLines(ps[0].axisValueLabel, [`Clearing price ${price(r[dir + '_clear'])}${ics.length ? `, set on ${ics.map(icName).join(' and ')}` : ''}`,
+      `Average ${price(ratio(r[dir + '_cost'], r[dir + '_pvol']))} · ${dir === 'buy' ? 'lowest' : 'highest'} ${price(r[dir === 'buy' ? 'buy_min' : 'sell_max'])}`, `${mwh(r[dir + '_vol'])} ${word}`])
+      + clickHint(icPickHint(ps[0].axisValueLabel, i));
+  } };
+  const gap = cats.length <= 70;
+  o.series = links.map((k) => ({ name: icName(k), type: 'bar', stack: 'c', barMaxWidth: 22, color: css(IC[k].col), emphasis: { disabled: true },
+    itemStyle: { borderRadius: [2, 2, 0, 0], ...(gap ? { borderColor: css('--surface'), borderWidth: 1 } : {}) },
+    data: at.map((r, i) => (r && setters.get(String(cats[i]))?.[0] === k ? r[dir + '_clear'] : null)) }));
+  if (!o.series.length) o.series = [{ name: 'Clearing price', type: 'bar', barMaxWidth: 22, color: css('--s1'), data: at.map((r) => r?.[dir + '_clear'] ?? null) }];
+  o.legend.show = o.series.length > 1;
+  o.series[0].markLine = mark();
+  el.dataset.bars = '1';
+  icClickable(el, o, cats, (i) => onSelect(String(cats[i])));
+}
+
+/** Who set the price in the period shown: priced trades per link x counterparty, as a ladder (dearest first when NESO
+ *  bought, cheapest first when it sold) and a table. The marginal ones, which set a half-hour's clearing price, are marked. */
+function icWho(chartEl, tableEl, rows, all, dir, when) {
+  const word = dir === 'buy' ? 'bought' : 'sold';
+  const best = dir === 'buy' ? 'price_max' : 'price_min';
+  const hh = all[dir + '_hh'] || 0;
+  $('#icWhoTitle').textContent = `Who set the price, ${when}`;
+  const setters = rows.filter((r) => r.n_marginal > 0).sort((a, b) => b.n_marginal - a.n_marginal);
+  const nameOf = (r) => `${icName(r.ic)} · ${r.party}`;
+  if (!rows.length) {
+    $('#icWhoNote').textContent = `NESO ${word} no energy at a published price for ${when}.`;
+    chartEl.innerHTML = '<div class="empty">No priced trades.</div>'; charts.delete(chartEl); tableEl.innerHTML = '';
+    return;
+  }
+  $('#icWhoNote').textContent = hh <= 1
+    ? `Clearing price ${price(all[dir + '_clear'])}, set by ${setters.map((r) => `${r.party} on ${icName(r.ic)}`).join(' and ')}. Every trade NESO ${word}, ${dir === 'buy' ? 'dearest' : 'cheapest'} first.`
+    : `${setters[0] ? `${setters[0].party} on ${icName(setters[0].ic)} set the clearing price most often: ${setters[0].n_marginal} of ${hh} half-hours. ` : ''}Each link and counterparty's ${dir === 'buy' ? 'dearest' : 'cheapest'} trade, ranked. Click a half-hour in the grid above to see one at a time.`;
+  // Ladder: the 15 most extreme groups, the marginal end at the top.
+  const top = rows.slice(0, 15).reverse();
+  const o = baseOption();
+  o.legend.show = false;
+  o.grid = { left: 8, right: 70, top: 8, bottom: 8, containLabel: true };
+  o.tooltip = { ...o.tooltip, trigger: 'item', axisPointer: { type: 'none' }, formatter: (p) => {
+    const r = top[p.dataIndex];
+    return tipLines(nameOf(r), [`${r.kind} · ${r.so}`, `${dir === 'buy' ? 'Dearest' : 'Cheapest'} trade ${price(r[best])} · average ${price(ratio(r.cost, r.vol))}`,
+      `${mwh(r.vol)} ${word} in ${r.n_hh} half-hour${r.n_hh === 1 ? '' : 's'}`,
+      r.n_marginal ? `Set the clearing price in ${r.n_marginal} half-hour${r.n_marginal === 1 ? '' : 's'}` : 'Never the marginal trade']) + clickHint(`Click to show only trades with ${r.party}`);
+  } };
+  o.yAxis = { ...o.yAxis, type: 'category', data: top.map(nameOf), splitLine: { show: false },
+    axisLabel: { color: css('--ink2'), fontSize: 11, width: chartEl.clientWidth < 560 ? 130 : 210, overflow: 'truncate' } };
+  const vals = top.map((r) => r[best]);
+  o.xAxis = { ...o.xAxis, type: 'value', scale: true, min: (v) => Math.min(0, v.min), splitLine: { lineStyle: { color: css('--grid') } }, splitNumber: 4,
+    axisLabel: { color: css('--muted'), fontSize: 11, hideOverlap: true, formatter: (v) => price(v).replace('/MWh', '') } };
+  o.series = [{ type: 'bar', barMaxWidth: 16, emphasis: { disabled: true },
+    data: top.map((r, i) => ({ value: vals[i], itemStyle: { color: css(IC[r.ic]?.col || '--other'), borderRadius: 2, opacity: r.n_marginal ? 1 : 0.55 } })),
+    label: { show: true, position: 'right', fontSize: 11, color: css('--ink2'), formatter: (p) => `${top[p.dataIndex].n_marginal ? '★ ' : ''}${price(p.value).replace('/MWh', '')}` } }];
+  const c = chart(chartEl);
+  c.setOption(o, true);
+  chartEl.style.cursor = 'pointer';
+  c.on('click', (p) => update({ icp: top[p.dataIndex].party }));
+  table(tableEl, [
+    { key: 'ic', label: 'Interconnector', html: (r) => `<span class="tag"><span class="dot" style="background:${css(IC[r.ic]?.col || '--other')}"></span>${esc(icName(r.ic))}</span>` },
+    { key: 'party', label: 'Counterparty', cls: 'wrap' },
+    { key: best, label: dir === 'buy' ? 'Dearest' : 'Cheapest', num: true, fmt: pound, tip: 'icclear' },
+    { key: 'avg', label: 'Average', num: true, fmt: pound },
+    { key: 'vol', label: word[0].toUpperCase() + word.slice(1), num: true, fmt: mwh, cls: 'hide-sm' },
+    { key: 'n_marginal', label: 'Set price', num: true, fmt: (v, r) => (v ? `★ ${v}${r.n_hh > 1 || hh > 1 ? ` of ${r.n_hh}` : ''}` : '–') },
+    { key: 'so', label: 'Type', cls: 'hide-sm', fmt: (v, r) => `${r.kind === 'Counterparty trade' ? '' : 'SO-SO · '}${v === 'Energy' ? 'Energy' : 'System'}` },
+  ], rows.map((r) => ({ ...r, avg: ratio(r.cost, r.vol) })), { onRow: (r) => update({ icp: r.party }),
+    rowTip: (r) => `${r.kind} · ${r.so} · ${r.n_hh} half-hour${r.n_hh === 1 ? '' : 's'} with trades. Click to show only trades with ${r.party}`, limit: 60 });
 }
 
 // ------------------------------------------------------------------ Demand Flexibility Service
