@@ -107,6 +107,10 @@ fun main(args: Array<String>) {
             val n = bmdash.Remit.ingest(db, bmdash.Elexon(3))
             println("remit: $n messages stored in ${(System.currentTimeMillis() - t) / 1000}s")
         }
+        "dfs" -> {  // just the DFS events and bids (normally fetched as part of `costs`)
+            val (hh, bids) = bmdash.Dfs.ingest(db, bmdash.Elexon(2, base = bmdash.Elexon.NESO_BASE))
+            println("dfs: $hh event half-hours, $bids bids")
+        }
         "serve" -> {
             val staticDir = File(opt(args, "static", "../bmdash/static")!!)
             val control = ThreadIngestControl(ingester)

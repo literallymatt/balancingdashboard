@@ -7,7 +7,7 @@ import java.time.LocalDate
  * NESO's daily cost data by purpose, Elexon BSAD (non-BM actions) and the EAC response/reserve auctions;
  * plus the network constraint data for the Constraints tab (daily constraint costs, half-hourly boundary flows) and the
  * REMIT outage messages for the REMIT tab (see Remit.kt), and the interconnector trades and flows for the Interconnectors tab
- * (see Interconnectors.kt).
+ * (see Interconnectors.kt), and the Demand Flexibility Service events and bids for the DFS tab (see Dfs.kt).
  * Totals only: there is no unit or asset behind these figures.
  */
 class CostIngester(private val db: SqlDb) {
@@ -96,6 +96,12 @@ class CostIngester(private val db: SqlDb) {
                 Remit.ingest(db, Elexon(3))
             } catch (e: Exception) {
                 errors.add("remit: ${e.message}")
+            }
+            // Demand Flexibility Service (DFS tab): small files, the current year re-read whole.
+            try {
+                Dfs.ingest(db, neso)
+            } catch (e: Exception) {
+                errors.add("dfs: ${e.message}")
             }
         } catch (e: Exception) {
             errors.add(e.message ?: e.toString())
