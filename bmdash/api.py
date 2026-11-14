@@ -396,6 +396,91 @@ def remit_outages(t: str, start: date = Query(alias="from"), end: date = Query(a
     return {"rows": remit.outages(start, end, _kind(kind), bucket, t, long)}
 
 
+# ---------------------------------------------------------------- interconnector balancing (see interconnectors.py)
+
+# One row of ic_trade is one settlement period x link x counterparty x kind x SO flag x direction (positive volume:
+# NESO buys). CASE rather than FILTER so the same SQL runs on the phone's SQLite (Interconnectors.kt).
+IC_DIMS = {
+    "ic": "ic",
+    "direction": "CASE WHEN volume > 0 THEN 'NESO buys' ELSE 'NESO sells' END",
+    "party": "party",
+    "kind": "CASE WHEN kind = 'soso' THEN 'SO-SO (system operator)' ELSE 'Counterparty trade' END",
+    "so": "CASE WHEN so_flag THEN 'System (SO-flagged)' ELSE 'Energy' END",
+}
+IC_MEASURES = """
+    sum(CASE WHEN volume > 0 THEN volume END) AS buy_vol, sum(CASE WHEN volume < 0 THEN volume END) AS sell_vol,
+    sum(CASE WHEN volume > 0 THEN cost END) AS buy_cost, sum(CASE WHEN volume < 0 THEN cost END) AS sell_cost,
+    sum(CASE WHEN volume > 0 AND cost <> 0 THEN volume END) AS buy_pvol, sum(CASE WHEN volume < 0 AND cost <> 0 THEN volume END) AS sell_pvol,
+    sum(n) AS n_trades"""
+IC_FLOW = """count(*) AS n, avg(flow_mw) AS flow_avg, min(flow_mw) AS flow_min, max(flow_mw) AS flow_max,
+    sum(CASE WHEN flow_mw > 0 THEN flow_mw * 0.5 ELSE 0 END) AS import_mwh,
+    sum(CASE WHEN flow_mw < 0 THEN flow_mw * 0.5 ELSE 0 END) AS export_mwh"""
+
+
+def ic_filters(start: date = Query(alias="from"), end: date = Query(alias="to"), ic: str | None = None,
+               direction: str | None = None, party: str | None = None, kind: str | None = None, so: str | None = None):
+    where, params = ["settlement_date BETWEEN ? AND ?"], [start, end]
+    for dim, raw in (("ic", ic), ("direction", direction), ("party", party), ("kind", kind), ("so", so)):
+        vals = [v for v in (raw or "").split("|") if v]
+        if vals:
+            where.append(f"{IC_DIMS[dim]} IN ({','.join('?' * len(vals))})")
+            params += vals
+    return " AND ".join(where), params
+
+
+@app.get("/api/ic/meta")
+def ic_meta():
+    t = q("SELECT min(settlement_date) AS min, max(settlement_date) AS max, count(*) AS n FROM ic_trade")[0]
+    f = q("SELECT min(settlement_date) AS min, max(settlement_date) AS max FROM ic_flow")[0]
+    lo = [d for d in (t["min"], f["min"]) if d]
+    hi = [d for d in (t["max"], f["max"]) if d]
+    return {"min": min(lo).isoformat() if lo else None, "max": max(hi).isoformat() if hi else None, "n": t["n"],
+            "trades_through": t["max"].isoformat() if t["max"] else None, "flows_through": f["max"].isoformat() if f["max"] else None,
+            **costs.status(), "running": COSTS_JOB["running"]}
+
+
+@app.get("/api/ic/agg")
+def ic_agg(f=Depends(ic_filters), bucket: str = "day", group: str = "none", top: int = 8, rank: str = "cash"):
+    """NESO's interconnector trades per time bucket, optionally split by one dimension; groups beyond the `top`
+    largest (by absolute cost or volume) fold into 'Other (rest)'."""
+    if bucket not in BUCKETS or (group != "none" and group not in IC_DIMS):
+        raise HTTPException(400, "bad bucket or group")
+    where, params = f
+    b = BUCKETS[bucket]
+    if group == "none":
+        rows = q(f"SELECT {b} AS t, 'All' AS g, {IC_MEASURES} FROM ic_trade WHERE {where} GROUP BY 1, 2 ORDER BY 1", params)
+        return {"rows": _clean(rows), "groups": ["All"]}
+    g = IC_DIMS[group]
+    measure = "cost" if rank == "cash" else "volume"
+    ranked = q(f"SELECT {g} AS g, sum(abs({measure})) AS m FROM ic_trade WHERE {where} GROUP BY 1 ORDER BY 2 DESC, 1", params)
+    keep = [r["g"] for r in ranked[:top]]
+    folded = len(ranked) > top
+    gexpr, gp = (f"CASE WHEN {g} IN ({','.join('?' * len(keep))}) THEN {g} ELSE 'Other (rest)' END", keep) if folded else (g, [])
+    rows = q(f"SELECT {b} AS t, {gexpr} AS g, {IC_MEASURES} FROM ic_trade WHERE {where} GROUP BY 1, 2 ORDER BY 1", gp + params)
+    return {"rows": _clean(rows), "groups": keep + (["Other (rest)"] if folded else []), "n_groups": len(ranked)}
+
+
+@app.get("/api/ic/links")
+def ic_links(f=Depends(ic_filters)):
+    """Per link over the range: NESO's trades and the physical flow."""
+    where, params = f
+    trades = {r["ic"]: r for r in q(f"SELECT ic, {IC_MEASURES}, count(DISTINCT party) AS n_parties FROM ic_trade WHERE {where} GROUP BY 1", params)}
+    flows = {r["ic"]: r for r in q(f"SELECT ic, {IC_FLOW} FROM ic_flow WHERE settlement_date BETWEEN ? AND ? GROUP BY 1", params[:2])}
+    return {"rows": [{"ic": k, **(trades.get(k) or {}), **(flows.get(k) or {})} for k in sorted(set(trades) | set(flows))]}
+
+
+@app.get("/api/ic/flow")
+def ic_flow(start: date = Query(alias="from"), end: date = Query(alias="to"), bucket: str = "day", ic: str | None = None):
+    """Physical flow per link and time bucket (MW, positive = import into GB)."""
+    if bucket not in BUCKETS:
+        raise HTTPException(400, "bad bucket")
+    vals = [v for v in (ic or "").split("|") if v]
+    cond = f" AND ic IN ({','.join('?' * len(vals))})" if vals else ""
+    rows = q(f"SELECT {BUCKETS[bucket]} AS t, ic AS g, {IC_FLOW} FROM ic_flow WHERE settlement_date BETWEEN ? AND ?{cond} GROUP BY 1, 2 ORDER BY 1, 2",
+             [start, end, *vals])
+    return {"rows": _clean(rows)}
+
+
 COSTS_JOB = {"running": False}
 
 

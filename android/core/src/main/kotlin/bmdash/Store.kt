@@ -40,6 +40,13 @@ object Store {
             unavailable_mw REAL, t_start INTEGER, t_end INTEGER, cause TEXT, participant TEXT)""",
         "CREATE TABLE IF NOT EXISTS remit_seg (mrid TEXT NOT NULL, t0 INTEGER, t1 INTEGER, mw REAL)",
         "CREATE INDEX IF NOT EXISTS remit_seg_mrid ON remit_seg(mrid)",
+        // Interconnectors tab (see Interconnectors.kt): NESO's trades over the links (from BSAD), summed per settlement period
+        // x link x counterparty x kind x SO flag x direction, and the physical flow per link and half-hour.
+        """CREATE TABLE IF NOT EXISTS ic_trade (settlement_date TEXT NOT NULL, sp INTEGER, ic TEXT, party TEXT, kind TEXT,
+            so_flag INTEGER, volume REAL, cost REAL, n INTEGER)""",
+        "CREATE INDEX IF NOT EXISTS ic_trade_date ON ic_trade(settlement_date)",
+        """CREATE TABLE IF NOT EXISTS ic_flow (settlement_date TEXT NOT NULL, sp INTEGER NOT NULL, ic TEXT NOT NULL, flow_mw REAL,
+            PRIMARY KEY (settlement_date, ic, sp)) WITHOUT ROWID""",
     )
 
     fun init(db: SqlDb) {

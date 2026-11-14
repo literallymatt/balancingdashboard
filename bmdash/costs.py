@@ -10,6 +10,7 @@ These figures are totals with no unit or asset behind them, so they live apart f
 - ``thermal`` and ``constraint_type``: daily constraint costs for the Constraints tab, plus the half-hourly
   boundary flows and limits (see constraints.py).
 - REMIT outage messages for the REMIT tab are fetched in the same refresh (see remit.py).
+- Interconnector trades (from the same BSAD download) and flows for the Interconnectors tab (see interconnectors.py).
 
 BM cost is derived as NESO's total minus BSAD: NESO's total covers the BM plus non-BM actions, and that
 difference tracks the unit-level Elexon BM cashflows to within about 1%.
@@ -132,7 +133,9 @@ def fetch_eac(client: httpx.Client, start: date, end: date) -> list[tuple]:
     return rows
 
 
-def fetch_bsad(client: httpx.Client, start: date, end: date) -> list[tuple]:
+def fetch_bsad(client: httpx.Client, start: date, end: date, ic_sink=None) -> list[tuple]:
+    """Daily BSAD cost by service. ``ic_sink`` (interconnectors.TradeSink), when given, also collects the
+    interconnector trades from the same download."""
     rows = []
     for first, nxt in _months(start, end):
         a = max(first, start)
@@ -147,6 +150,8 @@ def fetch_bsad(client: httpx.Client, start: date, end: date) -> list[tuple]:
             if key in seen or not ds or not (a.isoformat() <= ds < b.isoformat()):
                 continue
             seen.add(key)
+            if ic_sink is not None:
+                ic_sink.add(r)
             svc = (r.get("service") or "").lower()
             by[(ds, "energy" if svc == "energy" else "system" if svc == "system" else "other")] += float(r.get("cost") or 0)
         days = {ds for ds, _ in by}
@@ -193,20 +198,44 @@ def ingest_costs(start: date | None = None, end: date | None = None, log=print) 
     start = start or incremental_start()
     end = end or datetime.now(timezone.utc).date()
     store.DATA.mkdir(parents=True, exist_ok=True)
-    from . import constraints, remit  # constraints imports this module, so not at the top
+    from . import constraints, interconnectors, remit  # constraints imports this module, so not at the top
 
-    errors, new = [], []
+    # The Interconnectors tab's trades come out of the BSAD download. When they are not held yet (first run, or data
+    # from before the tab existed) BSAD is fetched from the start of the history so the tab gets a full backfill.
+    interconnectors.ensure_layout()
+    ic_start = start if interconnectors.held() else min(start, DEFAULT_START)
+    ic_sink = interconnectors.TradeSink()
+    errors, new, windows = [], [], {}
     with httpx.Client(headers={"User-Agent": "bmdash/0.1"}, follow_redirects=True) as client:
-        for name, fn in (("neso_purpose", fetch_purpose), ("eac", fetch_eac), ("bsad", fetch_bsad),
-                         ("thermal", constraints.fetch_thermal), ("constraint_type", constraints.fetch_types)):
+        for name, fn, a in (("neso_purpose", fetch_purpose, start), ("eac", fetch_eac, start),
+                            ("bsad", lambda c, s, e: fetch_bsad(c, s, e, ic_sink), ic_start),
+                            ("thermal", constraints.fetch_thermal, start), ("constraint_type", constraints.fetch_types, start)):
             try:
-                log(f"  {name}: fetching {start} .. {end}", flush=True) if log is print else log(f"  {name}: fetching")
-                got = fn(client, start, end)
+                log(f"  {name}: fetching {a} .. {end}", flush=True) if log is print else log(f"  {name}: fetching")
+                got = fn(client, a, end)
                 log(f"  {name}: {len(got)} rows")
                 new += got
+                windows[name] = a
             except Exception as e:  # a failing source must not discard the others
                 errors.append(f"{name}: {e}")
                 log(f"  {name}: FAILED {e}")
+                if name == "bsad":
+                    ic_sink = None
+        if ic_sink is not None:
+            try:
+                got = ic_sink.rows()
+                interconnectors.merge_trades(got, ic_start, end)
+                log(f"  interconnector trades: {len(got)} rows")
+            except Exception as e:
+                errors.append(f"interconnector trades: {e}")
+                log(f"  interconnector trades: FAILED {e}")
+        try:
+            got = interconnectors.fetch_flows(client, ic_start, end)
+            interconnectors.merge_flows(got, ic_start, end)
+            log(f"  interconnector flows: {len(got)} half-hours")
+        except Exception as e:
+            errors.append(f"interconnector flows: {e}")
+            log(f"  interconnector flows: FAILED {e}")
         # Half-hourly boundary flows and limits have their own file. They are day-ahead forecasts, so tomorrow's
         # are usually published too.
         try:
@@ -223,13 +252,12 @@ def ingest_costs(start: date | None = None, end: date | None = None, log=print) 
         except Exception as e:
             errors.append(f"remit: {e}")
             log(f"  remit: FAILED {e}")
-    fresh = {(s, c) for _, s, c, _ in new}
-    sources = {s for s, _ in fresh}
-    # replace what this run fetched, within the fetched range; keep everything else
-    keep = [r for r in read_all() if not (r[1] in sources and start <= r[0] <= end)]
+    # replace what this run fetched, within each source's fetched range; keep everything else
+    keep = [r for r in read_all() if not (r[1] in windows and windows[r[1]] <= r[0] <= end)]
     write_all(keep + new)
     prev = status()
     first = min(start.isoformat(), prev.get("start") or start.isoformat())
+    # (the Interconnectors tab's own range comes from its data, see api.ic_meta)
     info = {"updated_at": time.time(), "start": first, "end": end.isoformat(), "error": "; ".join(errors)}
     META.write_text(json.dumps(info))
     return info

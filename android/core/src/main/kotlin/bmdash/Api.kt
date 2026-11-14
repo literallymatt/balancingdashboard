@@ -48,6 +48,11 @@ class Api(private val db: SqlDb, private val control: IngestControl, private val
         r == "remit/meta" -> Remit.meta(db, costs?.running ?: false, costs?.status()?.get("error") as? String ?: "")
         r == "remit/agg" -> { checkBucket(p); Remit.aggregate(db, LocalDate.parse(date(p, "from")), LocalDate.parse(date(p, "to")), kind(p), p["bucket"] ?: "day", bool(p, "long")) }
         r == "remit/outages" -> { checkBucket(p); mapOf("rows" to Remit.outages(db, LocalDate.parse(date(p, "from")), LocalDate.parse(date(p, "to")), kind(p), p["bucket"] ?: "day", req(p, "t"), bool(p, "long"))) }
+        r == "ic/meta" -> Interconnectors.meta(db, (costs?.status() ?: emptyMap()))
+        r == "ic/agg" -> Interconnectors.agg(db, Interconnectors.Filter(p, date(p, "from"), date(p, "to")),
+            BUCKETS[p["bucket"] ?: "day"] ?: throw HttpError(400, "bad bucket or group"), p["group"] ?: "none", (p["top"] ?: "8").toInt(), p["rank"] ?: "cash")
+        r == "ic/links" -> Interconnectors.links(db, Interconnectors.Filter(p, date(p, "from"), date(p, "to")))
+        r == "ic/flow" -> Interconnectors.flow(db, date(p, "from"), date(p, "to"), BUCKETS[p["bucket"] ?: "day"] ?: throw HttpError(400, "bad bucket"), p["ic"])
         r == "costs/refresh" -> { startCosts?.invoke() ?: throw HttpError(404, "Not Found"); mapOf("running" to true) }
         r == "version" -> appVersion?.let { mapOf("version" to it) } ?: throw HttpError(404, "Not Found")
         r == "debug" -> debug?.let { it.ensureRunning(); it.snapshot() } ?: throw HttpError(404, "Not Found")
