@@ -50,7 +50,8 @@ The Data tab in the dashboard can start the same fetch and shows coverage.
 - **Store** (`store.py`): one zstd Parquet file per dataset per settlement day under `data/`,
   written atomically. DuckDB queries them through glob views, so the ingester and the server
   can run at the same time and new days appear without a restart. Days fetched before the data
-  had settled (5 days) are re-fetched on the next run.
+  had settled (5 days) are re-fetched, but at most every 6 hours (`--force` overrides), so repeated
+  ingests do not redo the slowest requests.
 - **API** (`api.py`): FastAPI. `/api/agg` buckets by settlement period, hour, day, week, month
   or time of day, splits by any dimension and folds the tail into "Other".
 - **UI** (`static/`): vanilla JS and ECharts, no build step. All state is in the URL.
