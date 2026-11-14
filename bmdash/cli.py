@@ -20,7 +20,7 @@ def main() -> None:
     i.add_argument("--concurrency", type=int, default=16, help="simultaneous HTTP requests")
     i.add_argument("--parallel-days", type=int, default=4)
 
-    c = sub.add_parser("costs", help="fetch system-level balancing costs (NESO, Elexon BSAD, EAC) for the Total costs tab")
+    c = sub.add_parser("costs", help="fetch system-level balancing costs (NESO, Elexon BSAD, EAC) and network constraint data for the Total costs and Constraints tabs")
     c.add_argument("--from", dest="start", help="first date (default: incremental -- recent days only once data is held, else 2025-04-01)")
     i.add_argument("--no-costs", action="store_true", help="skip the system-level cost refresh at the end")
 
@@ -57,7 +57,7 @@ def main() -> None:
         raise SystemExit(1)
     if not a.no_costs:
         from . import costs
-        print("System-level costs:")
+        print("System-level costs and constraints:")
         try:
             costs.ingest_costs()
         except Exception as e:  # offline or a source is down: the unit-level data is already saved

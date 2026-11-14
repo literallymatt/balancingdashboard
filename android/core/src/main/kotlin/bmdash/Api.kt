@@ -42,6 +42,9 @@ class Api(private val db: SqlDb, private val control: IngestControl, private val
         r == "bsad" -> bsad(date(p, "from"), date(p, "to"), p["bucket"] ?: "day")
         r == "ingest" -> control.status()
         r == "costs/monthly" -> costsMonthly(p["from"], p["to"])
+        r == "constraints/meta" -> constraintsMeta()
+        r == "constraints/agg" -> constraintsAgg(date(p, "from"), date(p, "to"), p["bucket"] ?: "day")
+        r == "constraints/costs" -> constraintsCosts(date(p, "from"), date(p, "to"), p["bucket"] ?: "day")
         r == "costs/refresh" -> { startCosts?.invoke() ?: throw HttpError(404, "Not Found"); mapOf("running" to true) }
         r == "version" -> appVersion?.let { mapOf("version" to it) } ?: throw HttpError(404, "Not Found")
         r == "debug" -> debug?.let { it.ensureRunning(); it.snapshot() } ?: throw HttpError(404, "Not Found")
@@ -275,7 +278,8 @@ class Api(private val db: SqlDb, private val control: IngestControl, private val
         val rows = db.query(
             """WITH ok AS (SELECT date FROM cost_daily WHERE source = 'neso_purpose' AND category = '_n' AND amount >= ?)
                SELECT substr(date, 1, 7) AS m, source, category, sum(amount) AS v, count(DISTINCT date) AS n
-               FROM cost_daily WHERE date BETWEEN ? AND ? AND (source = 'eac' OR date IN (SELECT date FROM ok))
+               FROM cost_daily WHERE date BETWEEN ? AND ? AND source IN ('neso_purpose', 'bsad', 'eac')
+               AND (source = 'eac' OR date IN (SELECT date FROM ok))
                GROUP BY 1, 2, 3""", listOf(MIN_PERIODS, lo, hi))
         val months = java.util.TreeMap<String, LinkedHashMap<String, Any?>>()
         for (r in rows) {
@@ -302,6 +306,44 @@ class Api(private val db: SqlDb, private val control: IngestControl, private val
         }
         val through = db.query("SELECT max(date) AS d FROM cost_daily WHERE source = 'neso_purpose' AND category = '_n' AND amount >= ?", listOf(MIN_PERIODS))[0]["d"]
         return linkedMapOf<String, Any?>("months" to out, "through" to through) + (costs?.status() ?: emptyMap())
+    }
+
+    // ------------------------------------------------------------ network constraints (mirrors api.py)
+
+    private fun constraintsMeta(): Any {
+        val span = db.query("SELECT min(settlement_date) AS min, max(settlement_date) AS max, count(*) AS n FROM constraint_hh")[0]
+        val groups = db.query("""SELECT grp AS g, min(settlement_date) AS first, max(settlement_date) AS last, count(*) AS n
+            FROM constraint_hh GROUP BY 1 ORDER BY 1""")
+        val cost = db.query("SELECT max(date) AS d FROM cost_daily WHERE source = 'thermal'")[0]["d"]
+        return LinkedHashMap(span) + linkedMapOf("groups" to groups, "costs_through" to cost) + (costs?.status() ?: emptyMap())
+    }
+
+    /** Per boundary and time bucket: half-hours, half-hours at or over the limit, loading and energy over the limit.
+     *  The '_any' group counts half-hours in which at least one boundary was at its limit. */
+    private fun constraintsAgg(from: String, to: String, bucket: String): Any {
+        val b = BUCKETS[bucket] ?: throw HttpError(400, "bad bucket")
+        val rows = db.query(
+            """WITH c AS ($CON)
+               SELECT $b AS t, grp AS g, count(*) AS n, sum(bind) AS n_bind, avg(load) AS load_avg, max(load) AS load_max,
+                      avg(flow_mw) AS flow_avg, max(flow_mw) AS flow_max, avg(limit_mw) AS limit_avg,
+                      min(limit_mw) AS limit_min, sum(excess) AS excess_mwh
+               FROM c GROUP BY 1, 2
+               UNION ALL
+               SELECT $b AS t, '_any' AS g, count(*) AS n, sum(bind) AS n_bind, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+               FROM (SELECT settlement_date, sp, max(bind) AS bind FROM c GROUP BY 1, 2) a GROUP BY 1
+               ORDER BY 1, 2""", listOf(from, to))
+        return mapOf("rows" to rows)
+    }
+
+    /** Daily constraint costs by boundary group ('thermal') and by reason ('constraint_type'). */
+    private fun constraintsCosts(from: String, to: String, bucket: String): Any {
+        if (bucket !in BUCKETS) throw HttpError(400, "bad bucket")
+        val b = COST_BUCKETS[bucket] ?: "0"
+        val rows = db.query(
+            """SELECT $b AS t, source, category, sum(amount) AS v, count(DISTINCT date) AS n FROM cost_daily
+               WHERE source IN ('thermal', 'constraint_type') AND date BETWEEN ? AND ? GROUP BY 1, 2, 3 ORDER BY 1""", listOf(from, to))
+        val through = db.query("SELECT max(date) AS d FROM cost_daily WHERE source = 'thermal'")[0]["d"]
+        return linkedMapOf("rows" to rows, "daily" to (bucket in setOf("sp", "hour", "tod")), "through" to through)
     }
 
     private fun startIngest(p: Map<String, String>): Any {
@@ -352,6 +394,19 @@ class Api(private val db: SqlDb, private val control: IngestControl, private val
                    coalesce(u.gsp_group, 'Transmission / n.a.') AS gsp,
                    coalesce(u.name, b.bm_unit) AS unit_name
             FROM boav b LEFT JOIN units u ON u.bm_unit = b.bm_unit"""
+
+        // One row per boundary x half-hour. `bind`: the forecast flow reached the limit.
+        private const val CON = """SELECT settlement_date, sp, grp, limit_mw, flow_mw,
+                CASE WHEN limit_mw > 0 AND flow_mw >= limit_mw THEN 1 ELSE 0 END AS bind,
+                CASE WHEN limit_mw > 0 THEN flow_mw / limit_mw END AS load,
+                CASE WHEN flow_mw > limit_mw THEN (flow_mw - limit_mw) * 0.5 ELSE 0 END AS excess
+            FROM constraint_hh WHERE settlement_date BETWEEN ? AND ? AND flow_mw IS NOT NULL"""
+        // Constraint costs are daily: finer buckets fall back to days and the time-of-day profile has none.
+        private val COST_BUCKETS = mapOf(
+            "sp" to "date || 'T00:00:00'", "hour" to "date || 'T00:00:00'", "day" to "date || 'T00:00:00'",
+            "week" to "date(date, '-6 days', 'weekday 1') || 'T00:00:00'", "month" to "strftime('%Y-%m-01T00:00:00', date)",
+            "none" to "0",
+        )
 
         private const val MIN_PERIODS = 44 // a NESO day counts as published once it has most of its 46-50 settlement periods
 

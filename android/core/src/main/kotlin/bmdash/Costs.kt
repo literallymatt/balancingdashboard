@@ -4,7 +4,8 @@ import java.time.LocalDate
 
 /**
  * System-level balancing costs for the Total costs tab, from public sources (see bmdash/costs.py):
- * NESO's daily cost data by purpose, Elexon BSAD (non-BM actions) and the EAC response/reserve auctions.
+ * NESO's daily cost data by purpose, Elexon BSAD (non-BM actions) and the EAC response/reserve auctions;
+ * plus the network constraint data for the Constraints tab (daily constraint costs, half-hourly boundary flows).
  * Totals only: there is no unit or asset behind these figures.
  */
 class CostIngester(private val db: SqlDb) {
@@ -49,6 +50,8 @@ class CostIngester(private val db: SqlDb) {
                 "neso_purpose" to { fetchPurpose(neso, start, end) },
                 "eac" to { fetchEac(neso, start, end) },
                 "bsad" to { fetchBsad(elexon, start, end) },
+                "thermal" to { fetchThermal(neso, start, end) },
+                "constraint_type" to { fetchConstraintTypes(neso, start, end) },
             )) {
                 try {
                     val rows = fn()
@@ -59,6 +62,19 @@ class CostIngester(private val db: SqlDb) {
                 } catch (e: Exception) {
                     errors.add("$name: ${e.message}")
                 }
+            }
+            // Half-hourly boundary flows and limits (Constraints tab), month by month so a phone never holds more
+            // than one month in memory. Day-ahead forecasts, so tomorrow is usually published too.
+            try {
+                val hhEnd = end.plusDays(1)
+                fetchBoundaries(neso, start, hhEnd) { from, until, rows ->
+                    db.transaction {  // replace one month at a time, so a failure part-way keeps what was held
+                        db.exec("DELETE FROM constraint_hh WHERE settlement_date >= ? AND settlement_date < ?", listOf(from.toString(), until.toString()))
+                        db.insertBatch("INSERT OR REPLACE INTO constraint_hh VALUES (?, ?, ?, ?, ?)", rows)
+                    }
+                }
+            } catch (e: Exception) {
+                errors.add("boundaries: ${e.message}")
             }
         } catch (e: Exception) {
             errors.add(e.message ?: e.toString())
@@ -159,10 +175,103 @@ class CostIngester(private val db: SqlDb) {
         return rows
     }
 
+    // ------------------------------------------------------------ network constraints (see bmdash/constraints.py)
+
+    /** Some of NESO's yearly files store numbers as text. */
+    private fun num(v: Any?): Double? = when (v) {
+        null -> null
+        is Number -> v.toDouble()
+        else -> v.toString().replace(",", "").toDoubleOrNull()
+    }
+
+    /** Financial year -> resource id, for packages published as one file per year ("25-26" or "2025-2026"). */
+    private fun yearly(api: Elexon, pkg: String, pattern: Regex): Map<Int, String> {
+        val out = HashMap<Int, String>()
+        for (r in resources(api, pkg)) {
+            val m = pattern.matchEntire((r.str("name") ?: "").trim()) ?: continue
+            val y = m.groupValues[1].toInt()
+            out[if (y < 100) y + 2000 else y] = r.str("id") ?: continue
+        }
+        return out
+    }
+
+    private fun fetchThermal(api: Elexon, start: LocalDate, end: LocalDate): List<List<Any?>> {
+        val res = yearly(api, THERMAL_PACKAGE, Regex("Thermal Constraint Costs Data (\\d{2})-(\\d{2})"))
+        val rows = ArrayList<List<Any?>>()
+        for (fy in fiscalYear(start)..fiscalYear(end)) {
+            val rid = res[fy] ?: continue
+            // Column ids vary between yearly files ("Daily Cost (GBP)" became "Daily Cost GBP"), so select them all.
+            for (r in sql(api, "SELECT * FROM \"$rid\" WHERE \"Settlement Date\" >= '$start' AND \"Settlement Date\" <= '$end'")) {
+                val d = r.str("Settlement Date")?.take(10) ?: continue
+                val g = r.str("Constraint Group") ?: continue
+                val cost = r.entries.firstOrNull { it.key.lowercase().startsWith("daily cost") }?.value
+                rows.add(listOf(d, "thermal", g, num(cost) ?: 0.0))
+            }
+        }
+        return rows
+    }
+
+    private fun fetchConstraintTypes(api: Elexon, start: LocalDate, end: LocalDate): List<List<Any?>> {
+        val res = yearly(api, BREAKDOWN_PACKAGE, Regex("Constraint Breakdown (\\d{4})-(\\d{4})"))
+        val rows = ArrayList<List<Any?>>()
+        for (fy in fiscalYear(start)..fiscalYear(end)) {
+            val rid = res[fy] ?: continue
+            val cols = CONSTRAINT_TYPES.keys.joinToString(", ") { "\"$it\"" }
+            for (r in sql(api, "SELECT \"Date\", $cols FROM \"$rid\" WHERE \"Date\" >= '$start' AND \"Date\" <= '$end'")) {
+                val d = r.str("Date")?.take(10) ?: continue
+                for ((c, k) in CONSTRAINT_TYPES) rows.add(listOf(d, "constraint_type", k, num(r[c]) ?: 0.0))
+            }
+        }
+        return rows
+    }
+
+    private class HhAcc { val seen = HashSet<String>(); val rows = ArrayList<List<Any?>>() }
+
+    /** GB local wall-clock start -> (settlement date, period). `later` picks the second 01:xx on the autumn change. */
+    private fun settlementPeriod(local: java.time.LocalDateTime, later: Boolean): Pair<String, Int> {
+        val d = local.toLocalDate()
+        var z = java.time.ZonedDateTime.ofLocal(local, Ingester.LONDON, null)
+        if (later) z = z.withLaterOffsetAtOverlap()
+        val mins = java.time.Duration.between(Ingester.dayBoundsUtc(d).first, z.toInstant()).toMinutes()
+        return d.toString() to (mins / 30).toInt() + 1
+    }
+
+    private fun fetchBoundaries(api: Elexon, start: LocalDate, end: LocalDate, sink: (LocalDate, LocalDate, List<List<Any?>>) -> Unit) {
+        val rid = resources(api, FLOWS_PACKAGE).firstOrNull { it.str("name") == FLOWS_RESOURCE }?.str("id")
+            ?: throw IllegalStateException("no '$FLOWS_RESOURCE' resource")
+        var a = start
+        while (!a.isAfter(end)) {
+            val b = minOf(a.withDayOfMonth(1).plusMonths(1).toEpochDay(), end.plusDays(1).toEpochDay()).let { LocalDate.ofEpochDay(it) }
+            val q = "SELECT \"Constraint Group\" AS g, \"Date_ Time GMT_BST\" AS t, \"Limit_MW\" AS l, \"Flow_MW\" AS f FROM \"$rid\" " +
+                "WHERE \"Date_ Time GMT_BST\" >= '${a}T00:00:00' AND \"Date_ Time GMT_BST\" < '${b}T00:00:00' ORDER BY \"_id\""
+            val acc = api.read("/datastore_search_sql", listOf("sql" to q), { HhAcc() }, listOf("result", "records")) { x, r ->
+                val g = r.str("g") ?: return@read
+                val t = r.str("t") ?: return@read
+                val local = java.time.LocalDateTime.parse(t.take(19))
+                var (d, sp) = settlementPeriod(local, false)
+                if (!x.seen.add("$g|$d|$sp")) {
+                    // A repeat is the second 01:xx on the autumn clock change; elsewhere NESO published a day twice.
+                    val (d2, sp2) = settlementPeriod(local, true)
+                    if (!x.seen.add("$g|$d2|$sp2")) return@read
+                    d = d2; sp = sp2
+                }
+                x.rows.add(listOf(d, sp.toLong(), g, num(r["l"]), num(r["f"])))
+            }
+            sink(a, b, acc.rows)
+            a = b
+        }
+    }
+
     companion object {
         val DEFAULT_START: LocalDate = LocalDate.of(2025, 4, 1) // a financial-year start: NESO's daily files and EAC archives split there
         private const val DAILY_PACKAGE = "daily-balancing-costs-balancing-services-use-of-system"
         private const val EAC_PACKAGE = "eac-auction-results"
+        private const val FLOWS_PACKAGE = "day-ahead-constraint-flows-and-limits"
+        private const val FLOWS_RESOURCE = "Day Ahead Constraint Flows and Limits"
+        private const val THERMAL_PACKAGE = "thermal-constraint-costs"
+        private const val BREAKDOWN_PACKAGE = "constraint-breakdown"
+        private val CONSTRAINT_TYPES = linkedMapOf("Thermal constraints cost" to "thermal", "Voltage constraints cost" to "voltage",
+            "Increasing system inertia cost" to "inertia", "Reducing largest loss cost" to "largest_loss")
         private val PURPOSE = linkedMapOf("Energy Imbalance" to "energy_imbalance", "Frequency Control" to "frequency_control",
             "Positive Reserve" to "positive_reserve", "Constraints" to "constraints", "Negative Reserve" to "negative_reserve", "Other" to "other")
         // DC/DM/DR (response) are four-hour windows; QR/SR/BR (reserve) are half-hour windows.

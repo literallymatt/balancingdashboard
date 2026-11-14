@@ -122,6 +122,22 @@ SQLite (see "What is stored" below).
   `uv run bmdash costs` (also run at the end of `bmdash ingest`) or the Refresh button; the phone app refreshes
   it on launch when older than 12 hours. The first run backfills from April 2025 (about a minute); after that a
   refresh only re-fetches the current month or so, a few seconds.
+- **Constraints tab**: where and when the transmission network was constrained, half-hourly. Source: NESO's
+  *day-ahead constraint flows and limits* (per boundary and half-hour: the limit and the flow NESO forecast across it
+  the day before). A half-hour counts as "at the limit" when the forecast flow is at or above the limit. The tab
+  shows a schematic map of GB with each boundary coloured by how often it was at its limit (or its average loading,
+  or energy over the limit) over the selected range, a boundary x time heatmap, flow against limit for one boundary,
+  and NESO's daily constraint costs by boundary group (thermal) and by reason (thermal, voltage, inertia, largest
+  loss). It uses the same date range and granularity controls as the unit tabs, from settlement period to month;
+  costs are only published per day, so they show per day at finer granularities. Notes: these are forecasts, not
+  metered flows; NESO renames boundaries as the network changes (SSE_SP became SSE_SP2), so codes are grouped into
+  families for the map and costs; map positions are drawn from NESO's network diagrams and are schematic (outline:
+  Natural Earth, public domain, `static/vendor/gb.json`). NESO sometimes publishes a day twice; repeats are dropped,
+  except the second 01:00-01:59 on the autumn clock change. Fetched with the Total costs data (`bmdash costs`, the
+  end of `bmdash ingest`, or the Refresh button): the first backfill from April 2025 is about 365k half-hours and
+  two minutes, later refreshes re-fetch the current month. Stored in `data/constraint_hh.parquet` (phone: the
+  `constraint_hh` table, about 15 MB for the backfill). The actual BM actions NESO took for constraints carry the
+  SO flag; the tab links to the Overview filtered to them, split by technology and unit.
 - **Instruction replay**: on a unit's page, the Day detail card can replay NESO's instructions
   for the day in the order they were issued (play, pause, step, slider), showing the unit's plan
   (PN), its output as instructed so far, the previous state and the newest instruction, with a

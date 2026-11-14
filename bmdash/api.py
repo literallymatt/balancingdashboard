@@ -277,7 +277,8 @@ def costs_monthly(start: date | None = Query(None, alias="from"), end: date | No
     lo, hi = start or date(2000, 1, 1), end or date(2100, 1, 1)
     rows = q("""WITH ok AS (SELECT date FROM cost_daily WHERE source = 'neso_purpose' AND category = '_n' AND amount >= ?)
                 SELECT strftime(date, '%Y-%m') AS m, source, category, sum(amount) AS v, count(DISTINCT date) AS n
-                FROM cost_daily WHERE date BETWEEN ? AND ? AND (source = 'eac' OR date IN (SELECT date FROM ok))
+                FROM cost_daily WHERE date BETWEEN ? AND ? AND source IN ('neso_purpose', 'bsad', 'eac')
+                AND (source = 'eac' OR date IN (SELECT date FROM ok))
                 GROUP BY ALL""", [MIN_PERIODS, lo, hi])
     months: dict[str, dict] = {}
     for r in rows:
@@ -304,6 +305,61 @@ def costs_monthly(start: date | None = Query(None, alias="from"), end: date | No
         out.append(m)
     through = q("SELECT max(date) AS d FROM cost_daily WHERE source = 'neso_purpose' AND category = '_n' AND amount >= ?", [MIN_PERIODS])[0]["d"]
     return {"months": out, "through": through.isoformat() if through else None, **costs.status(), "running": COSTS_JOB["running"]}
+
+
+# ---------------------------------------------------------------- network constraints (system-level)
+
+# One row per boundary x half-hour (NESO day-ahead flows and limits). `bind`: the forecast flow reached the limit.
+CON = """SELECT settlement_date, sp, grp, limit_mw, flow_mw,
+                CASE WHEN limit_mw > 0 AND flow_mw >= limit_mw THEN 1 ELSE 0 END AS bind,
+                CASE WHEN limit_mw > 0 THEN flow_mw / limit_mw END AS load,
+                CASE WHEN flow_mw > limit_mw THEN (flow_mw - limit_mw) * 0.5 ELSE 0 END AS excess
+         FROM constraint_hh WHERE settlement_date BETWEEN ? AND ? AND flow_mw IS NOT NULL"""
+# Constraint costs are daily, so finer buckets fall back to days and the time-of-day profile has none.
+COST_BUCKETS = {"sp": "CAST(date AS TIMESTAMP)", "hour": "CAST(date AS TIMESTAMP)", "day": "CAST(date AS TIMESTAMP)",
+                "week": "date_trunc('week', date)", "month": "date_trunc('month', date)", "none": "0"}
+
+
+@app.get("/api/constraints/meta")
+def constraints_meta():
+    span = q("SELECT min(settlement_date) AS min, max(settlement_date) AS max, count(*) AS n FROM constraint_hh")[0]
+    groups = q("""SELECT grp AS g, min(settlement_date) AS first, max(settlement_date) AS last, count(*) AS n
+                  FROM constraint_hh GROUP BY 1 ORDER BY 1""")
+    cost = q("SELECT max(date) AS d FROM cost_daily WHERE source = 'thermal'")[0]["d"]
+    return {**_clean([span])[0], "groups": _clean(groups), "costs_through": cost.isoformat() if cost else None,
+            **costs.status(), "running": COSTS_JOB["running"]}
+
+
+@app.get("/api/constraints/agg")
+def constraints_agg(start: date = Query(alias="from"), end: date = Query(alias="to"), bucket: str = "day"):
+    """Per boundary and time bucket: half-hours held, half-hours at or over the limit, loading (flow / limit) and
+    energy over the limit. The '_any' group counts half-hours in which at least one boundary was at its limit."""
+    if bucket not in BUCKETS:
+        raise HTTPException(400, "bad bucket")
+    b = BUCKETS[bucket]
+    rows = q(f"""WITH c AS ({CON})
+                 SELECT {b} AS t, grp AS g, count(*) AS n, sum(bind) AS n_bind, avg(load) AS load_avg, max(load) AS load_max,
+                        avg(flow_mw) AS flow_avg, max(flow_mw) AS flow_max, avg(limit_mw) AS limit_avg,
+                        min(limit_mw) AS limit_min, sum(excess) AS excess_mwh
+                 FROM c GROUP BY 1, 2
+                 UNION ALL
+                 SELECT {b} AS t, '_any' AS g, count(*) AS n, sum(bind) AS n_bind, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+                 FROM (SELECT settlement_date, sp, max(bind) AS bind FROM c GROUP BY 1, 2) a GROUP BY 1
+                 ORDER BY t, g""", [start, end])
+    return {"rows": _clean(rows)}
+
+
+@app.get("/api/constraints/costs")
+def constraints_costs(start: date = Query(alias="from"), end: date = Query(alias="to"), bucket: str = "day"):
+    """Daily constraint costs: by boundary group ('thermal') and by reason ('constraint_type')."""
+    if bucket not in BUCKETS:
+        raise HTTPException(400, "bad bucket")
+    b = COST_BUCKETS.get(bucket, "0")
+    rows = q(f"""SELECT {b} AS t, source, category, sum(amount) AS v, count(DISTINCT date) AS n FROM cost_daily
+                 WHERE source IN ('thermal', 'constraint_type') AND date BETWEEN ? AND ? GROUP BY 1, 2, 3 ORDER BY 1""",
+             [start, end])
+    through = q("SELECT max(date) AS d FROM cost_daily WHERE source = 'thermal'")[0]["d"]
+    return {"rows": _clean(rows), "daily": bucket in ("sp", "hour", "tod"), "through": through.isoformat() if through else None}
 
 
 COSTS_JOB = {"running": False}
