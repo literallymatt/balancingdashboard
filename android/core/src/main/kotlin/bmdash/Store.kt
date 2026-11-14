@@ -47,6 +47,14 @@ object Store {
         "CREATE INDEX IF NOT EXISTS ic_trade_date ON ic_trade(settlement_date)",
         """CREATE TABLE IF NOT EXISTS ic_flow (settlement_date TEXT NOT NULL, sp INTEGER NOT NULL, ic TEXT NOT NULL, flow_mw REAL,
             PRIMARY KEY (settlement_date, ic, sp)) WITHOUT ROWID""",
+        // DFS tab (see Dfs.kt): one row per event half-hour, and one per provider bid (DFS unit x half-hour).
+        """CREATE TABLE IF NOT EXISTS dfs_hh (settlement_date TEXT NOT NULL, sp INTEGER, event TEXT, direction TEXT, tag TEXT, live INTEGER,
+            req_mw REAL, procured_mw REAL, cost REAL, settled_mw REAL, settled_cost REAL)""",
+        "CREATE INDEX IF NOT EXISTS dfs_hh_date ON dfs_hh(settlement_date)",
+        """CREATE TABLE IF NOT EXISTS dfs_bid (settlement_date TEXT NOT NULL, sp INTEGER, event TEXT, direction TEXT, tag TEXT, live INTEGER,
+            party TEXT, unit TEXT, zone INTEGER, mw REAL, price REAL, accepted INTEGER)""",
+        "CREATE INDEX IF NOT EXISTS dfs_bid_date ON dfs_bid(settlement_date)",
+        "CREATE INDEX IF NOT EXISTS dfs_bid_event ON dfs_bid(event)",
     )
 
     fun init(db: SqlDb) {

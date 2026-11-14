@@ -11,6 +11,7 @@ These figures are totals with no unit or asset behind them, so they live apart f
   boundary flows and limits (see constraints.py).
 - REMIT outage messages for the REMIT tab are fetched in the same refresh (see remit.py).
 - Interconnector trades (from the same BSAD download) and flows for the Interconnectors tab (see interconnectors.py).
+- Demand Flexibility Service events and bids for the DFS tab (see dfs.py).
 
 BM cost is derived as NESO's total minus BSAD: NESO's total covers the BM plus non-BM actions, and that
 difference tracks the unit-level Elexon BM cashflows to within about 1%.
@@ -198,7 +199,7 @@ def ingest_costs(start: date | None = None, end: date | None = None, log=print) 
     start = start or incremental_start()
     end = end or datetime.now(timezone.utc).date()
     store.DATA.mkdir(parents=True, exist_ok=True)
-    from . import constraints, interconnectors, remit  # constraints imports this module, so not at the top
+    from . import constraints, dfs, interconnectors, remit  # constraints imports this module, so not at the top
 
     # The Interconnectors tab's trades come out of the BSAD download. When they are not held yet (first run, or data
     # from before the tab existed) BSAD is fetched from the start of the history so the tab gets a full backfill.
@@ -252,6 +253,12 @@ def ingest_costs(start: date | None = None, end: date | None = None, log=print) 
         except Exception as e:
             errors.append(f"remit: {e}")
             log(f"  remit: FAILED {e}")
+        # Demand Flexibility Service (DFS tab): small files, the current year re-read whole.
+        try:
+            dfs.ingest_dfs(client, log)
+        except Exception as e:
+            errors.append(f"dfs: {e}")
+            log(f"  dfs: FAILED {e}")
     # replace what this run fetched, within each source's fetched range; keep everything else
     keep = [r for r in read_all() if not (r[1] in windows and windows[r[1]] <= r[0] <= end)]
     write_all(keep + new)

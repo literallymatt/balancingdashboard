@@ -481,6 +481,132 @@ def ic_flow(start: date = Query(alias="from"), end: date = Query(alias="to"), bu
     return {"rows": _clean(rows)}
 
 
+# ---------------------------------------------------------------- Demand Flexibility Service (see dfs.py)
+
+# dfs_hh: one row per event half-hour (requirement, procured, cost, settled). dfs_bid: one row per bid (DFS unit x
+# half-hour). Volumes are MW for a half-hour, so MWh = MW x 0.5. CASE rather than FILTER so the same SQL runs on the
+# phone's SQLite (Dfs.kt).
+DFS_DIMS = {
+    "direction": "direction",
+    "tag": "CASE WHEN tag = '' THEN 'Not stated' ELSE tag END",
+    "party": "party",
+    "zone": "CASE WHEN zone IS NULL THEN 'No zone' ELSE 'Zone ' || CAST(zone AS VARCHAR) END",
+    "unit": "unit",
+}
+DFS_HH_GROUPS = ("direction", "tag")  # dfs_hh has no provider or zone
+DFS_HH = """sum(req_mw) * 0.5 AS req_mwh, sum(procured_mw) * 0.5 AS proc_mwh, sum(cost) AS cost,
+    sum(settled_mw) * 0.5 AS settled_mwh, sum(settled_cost) AS settled_cost,
+    sum(CASE WHEN settled_mw IS NOT NULL THEN procured_mw END) * 0.5 AS proc_settled_mwh,
+    count(*) AS n_hh, count(DISTINCT event) AS n_events"""
+DFS_BID = """sum(mw) * 0.5 AS offered_mwh, sum(CASE WHEN accepted THEN mw END) * 0.5 AS proc_mwh,
+    sum(CASE WHEN accepted THEN mw * 0.5 * price END) AS cost, count(*) AS n_bids,
+    sum(CASE WHEN accepted THEN 1 ELSE 0 END) AS n_accepted, count(DISTINCT unit) AS n_units, count(DISTINCT event) AS n_events,
+    min(CASE WHEN accepted THEN price END) AS price_min, max(CASE WHEN accepted THEN price END) AS price_max"""
+
+
+def dfs_filters(start: date = Query(alias="from"), end: date = Query(alias="to"), direction: str | None = None,
+                tag: str | None = None, test: bool = False):
+    """Range, event direction and tag, and whether to include NESO's test events (left out by default)."""
+    where, params = ["settlement_date BETWEEN ? AND ?"], [start, end]
+    if not test:
+        where.append("live")
+    for dim, raw in (("direction", direction), ("tag", tag)):
+        vals = [v for v in (raw or "").split("|") if v]
+        if vals:
+            where.append(f"{DFS_DIMS[dim]} IN ({','.join('?' * len(vals))})")
+            params += vals
+    return " AND ".join(where), params
+
+
+def _party(where: str, params: list, party: str | None) -> tuple[str, list]:
+    vals = [v for v in (party or "").split("|") if v]
+    return (f"{where} AND party IN ({','.join('?' * len(vals))})", params + vals) if vals else (where, params)
+
+
+@app.get("/api/dfs/meta")
+def dfs_meta():
+    t = q("SELECT min(settlement_date) AS min, max(settlement_date) AS max, count(DISTINCT event) AS n_events FROM dfs_hh WHERE live")[0]
+    s = q("SELECT max(settlement_date) AS d FROM dfs_hh WHERE settled_mw IS NOT NULL")[0]
+    return {**_clean([t])[0], "settled_through": s["d"].isoformat() if s["d"] else None, **costs.status(), "running": COSTS_JOB["running"]}
+
+
+@app.get("/api/dfs/agg")
+def dfs_agg(f=Depends(dfs_filters), bucket: str = "day", group: str = "none", party: str | None = None, top: int = 8, rank: str = "cash"):
+    """Per time bucket. With no split, or split by direction or tag, from the event half-hours (requirement, procured,
+    cost, settled); split by provider or zone, or filtered to a provider, from the bids (offered, procured, cost)."""
+    if bucket not in BUCKETS or (group != "none" and group not in DFS_DIMS):
+        raise HTTPException(400, "bad bucket or group")
+    where, params = f
+    b = BUCKETS[bucket]
+    bids = group not in ("none", *DFS_HH_GROUPS) or bool(party)
+    table, measures = ("dfs_bid", DFS_BID) if bids else ("dfs_hh", DFS_HH)
+    if bids:
+        where, params = _party(where, params, party)
+    if group == "none":
+        rows = q(f"SELECT {b} AS t, 'All' AS g, {measures} FROM {table} WHERE {where} GROUP BY 1, 2 ORDER BY 1", params)
+        return {"rows": _clean(rows), "groups": ["All"], "source": "bids" if bids else "events"}
+    g = DFS_DIMS[group]
+    if bids:
+        m = "CASE WHEN accepted THEN mw * price END" if rank == "cash" else "CASE WHEN accepted THEN mw END"
+    else:
+        m = "cost" if rank == "cash" else "procured_mw"
+    ranked = q(f"SELECT {g} AS g, coalesce(sum({m}), 0) AS m FROM {table} WHERE {where} GROUP BY 1 ORDER BY 2 DESC, 1", params)
+    keep = [r["g"] for r in ranked[:top]]
+    folded = len(ranked) > top
+    gexpr, gp = (f"CASE WHEN {g} IN ({','.join('?' * len(keep))}) THEN {g} ELSE 'Other (rest)' END", keep) if folded else (g, [])
+    rows = q(f"SELECT {b} AS t, {gexpr} AS g, {measures} FROM {table} WHERE {where} GROUP BY 1, 2 ORDER BY 1", gp + params)
+    return {"rows": _clean(rows), "groups": keep + (["Other (rest)"] if folded else []), "n_groups": len(ranked),
+            "source": "bids" if bids else "events"}
+
+
+@app.get("/api/dfs/events")
+def dfs_events(f=Depends(dfs_filters), party: str | None = None):
+    """One row per event in range: its window, requirement, procurement, cost and delivery, and who bid. With a provider
+    picked, only events it bid in."""
+    where, params = f
+    ev = q(f"""SELECT event, min(settlement_date) AS date, min(direction) AS direction, min(tag) AS tag, min(CASE WHEN live THEN 1 ELSE 0 END) AS live,
+               min(sp) AS sp_from, max(sp) AS sp_to, {DFS_HH}, max(req_mw) AS req_mw
+               FROM dfs_hh WHERE {where} GROUP BY 1""", params)
+    bw, bp = _party(where, params, party)
+    bids = {r["event"]: r for r in q(f"SELECT event, {DFS_BID}, count(DISTINCT party) AS n_parties, "
+                                      f"count(DISTINCT CASE WHEN accepted THEN party END) AS n_parties_acc FROM dfs_bid WHERE {bw} GROUP BY 1", bp)}
+    out = []
+    for r in ev:
+        b = bids.get(r["event"])
+        if party and not b:
+            continue
+        x = {**r}
+        if b:
+            x.update({k: b[k] for k in ("offered_mwh", "n_bids", "n_accepted", "n_units", "n_parties", "n_parties_acc", "price_min", "price_max")})
+            if party:  # the provider's own share
+                x.update(party_mwh=b["proc_mwh"], party_cost=b["cost"])
+        out.append(x)
+    out.sort(key=lambda r: (r["date"], r["sp_from"], r["event"]), reverse=True)
+    return {"rows": _clean(out)}
+
+
+@app.get("/api/dfs/providers")
+def dfs_providers(f=Depends(dfs_filters), group: str = "party", party: str | None = None):
+    """Bids per provider, zone or DFS unit over the range: offered, accepted and what NESO paid."""
+    if group not in ("party", "zone", "unit"):
+        raise HTTPException(400, "bad group")
+    where, params = _party(*f, party)
+    g = DFS_DIMS[group]
+    extra = ", min(party) AS party" if group == "unit" else ", count(DISTINCT party) AS n_parties"
+    rows = q(f"SELECT {g} AS g, {DFS_BID}{extra} FROM dfs_bid WHERE {where} GROUP BY 1 ORDER BY 1", params)
+    return {"rows": rows}
+
+
+@app.get("/api/dfs/bids")
+def dfs_bids(event: str):
+    """Every bid in one event, with the event's half-hours: the offer stack NESO accepted from."""
+    hh = q("SELECT settlement_date AS date, sp, direction, tag, req_mw, procured_mw, cost, settled_mw, settled_cost FROM dfs_hh "
+           "WHERE event = ? ORDER BY sp", [event])
+    bids = q("SELECT sp, party, unit, zone, mw, price, CASE WHEN accepted THEN 1 ELSE 0 END AS accepted FROM dfs_bid "
+             "WHERE event = ? ORDER BY sp, price, unit", [event])
+    return {"hh": _clean(hh), "bids": bids}
+
+
 COSTS_JOB = {"running": False}
 
 

@@ -53,6 +53,12 @@ class Api(private val db: SqlDb, private val control: IngestControl, private val
             BUCKETS[p["bucket"] ?: "day"] ?: throw HttpError(400, "bad bucket or group"), p["group"] ?: "none", (p["top"] ?: "8").toInt(), p["rank"] ?: "cash")
         r == "ic/links" -> Interconnectors.links(db, Interconnectors.Filter(p, date(p, "from"), date(p, "to")))
         r == "ic/flow" -> Interconnectors.flow(db, date(p, "from"), date(p, "to"), BUCKETS[p["bucket"] ?: "day"] ?: throw HttpError(400, "bad bucket"), p["ic"])
+        r == "dfs/meta" -> Dfs.meta(db, (costs?.status() ?: emptyMap()))
+        r == "dfs/agg" -> Dfs.agg(db, Dfs.Filter(p, date(p, "from"), date(p, "to")),
+            BUCKETS[p["bucket"] ?: "day"] ?: throw HttpError(400, "bad bucket or group"), p["group"] ?: "none", p["party"], (p["top"] ?: "8").toInt(), p["rank"] ?: "cash")
+        r == "dfs/events" -> Dfs.events(db, Dfs.Filter(p, date(p, "from"), date(p, "to")), p["party"])
+        r == "dfs/providers" -> Dfs.providers(db, Dfs.Filter(p, date(p, "from"), date(p, "to")), p["group"] ?: "party", p["party"])
+        r == "dfs/bids" -> Dfs.bids(db, req(p, "event"))
         r == "costs/refresh" -> { startCosts?.invoke() ?: throw HttpError(404, "Not Found"); mapOf("running" to true) }
         r == "version" -> appVersion?.let { mapOf("version" to it) } ?: throw HttpError(404, "Not Found")
         r == "debug" -> debug?.let { it.ensureRunning(); it.snapshot() } ?: throw HttpError(404, "Not Found")
