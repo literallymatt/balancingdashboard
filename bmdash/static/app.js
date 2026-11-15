@@ -114,10 +114,12 @@ function drillKey() {
 const COMPARED = (k) => ['view', 'unit', 'from', 'to', 'filters', ...Object.keys(DRILL_FIELDS[k.view] || {})];
 const sameKey = (a, b) => COMPARED(a).every((f) => String(a[f] ?? '') === String(b[f] ?? '')) && COMPARED(b).every((f) => String(a[f] ?? '') === String(b[f] ?? ''));
 
+/** The page a view is on, in words: "Overview", "Unit T_RYHPS-1". */
+const pageName = (k) => (k.view === 'unit' ? `Unit ${k.unit}` : VIEW_NAME[k.view] || k.view);
+
 /** The whole of a view in words: "Interconnectors · 5 Nov – 14 Nov 2026 · IFA". */
 function describe(k) {
-  const bits = [k.view === 'unit' ? k.unit : rangeLabel(k)];
-  if (k.view === 'unit') bits.push(rangeLabel(k));
+  const bits = [pageName(k), rangeLabel(k)];
   for (const [dim, vals] of Object.entries(JSON.parse(k.filters || '{}'))) if (vals.length) bits.push(vals.join(', '));
   for (const [f, [named]] of Object.entries(DRILL_FIELDS[k.view] || {})) if (k[f] != null && !(f === 'dev')) bits.push(named(k[f]));
   if (k.view === 'dfs' && k.dev != null) bits.push(DRILL_FIELDS.dfs.dev[0](k.dev));
@@ -126,7 +128,7 @@ function describe(k) {
 
 /** What one click-through changed, in a few words: "Mon 9 Nov 2026", "IFA", "Lead party: X". */
 function stepLabel(a, b) {
-  if (a.view !== b.view || a.unit !== b.unit) return b.view === 'unit' ? `Unit ${b.unit}` : VIEW_NAME[b.view] || b.view;
+  if (a.view !== b.view || a.unit !== b.unit) return pageName(b);
   const bits = [];
   if (a.from !== b.from || a.to !== b.to) bits.push(rangeLabel(b));
   const fa = JSON.parse(a.filters || '{}'), fb = JSON.parse(b.filters || '{}');
@@ -151,8 +153,9 @@ const here = () => { const i = trailPos(); return i >= 0 ? i : trailAt; };
  * Drill in from a click: apply `patch`, remembering the current view so it can be stepped back to.
  * Pass render: false when the page redraws itself (it only gets a new history entry and the trail).
  */
-function drill(patch, { render = true } = {}) {
+function drill(patch, { render = true, reveal = null } = {}) {
   const i = here();
+  if (reveal) pendingReveal = reveal;
   zoomTrail = zoomTrail.slice(0, i + 1);  // drilling from somewhere not on the trail starts a fresh one
   const from = drillKey();
   Object.assign(state, patch);
@@ -161,9 +164,31 @@ function drill(patch, { render = true } = {}) {
   zoomTrail.push({ from, to });
   saveTrail();
   if (render) writeHash();  // a real history entry, so the browser's Back button steps out too
-  else { history.pushState(null, '', stateHash()); drawZoomTrail(); }
+  else { history.pushState(null, '', stateHash()); drawZoomTrail(); revealPending(); }
 }
-const zoomTo = (patch) => drill(patch);
+const zoomTo = (patch, opts) => drill(patch, opts);
+
+// ------------------------------------------------------------------ show what a click changed
+// Some clicks change a card further down the page (a unit's day detail, a boundary's detail, a DFS event's bids).
+// After such a click, scroll that card into view if it is off-screen and flash its outline, so the click visibly does
+// something. Cards already on screen are only flashed.
+let pendingReveal = null;
+function revealPending() {
+  const sel = pendingReveal;
+  pendingReveal = null;
+  const el = sel && $(sel);
+  if (!el) return;
+  const stuck = Math.max($('.top')?.getBoundingClientRect().bottom || 0, $('#filterbar:not([hidden])')?.getBoundingClientRect().bottom || 0);
+  const r = el.getBoundingClientRect();
+  if (r.top < stuck || r.top > innerHeight - 120) {
+    const smooth = !matchMedia('(prefers-reduced-motion: reduce)').matches;
+    scrollTo({ top: scrollY + r.top - stuck - 12, behavior: smooth ? 'smooth' : 'auto' });
+  }
+  el.classList.remove('flash');
+  void el.offsetWidth;  // restart the animation if it is already running
+  el.classList.add('flash');
+  setTimeout(() => el.classList.remove('flash'), 1600);
+}
 
 /** For in-page changes that are not click-throughs (replay, slider): keep the trail pointing at where we are. */
 function followTrail(fn) {
@@ -189,9 +214,11 @@ function drawZoomTrail() {
   const i = trailAt = trailPos();
   if (i < 0) { el.hidden = true; el.innerHTML = ''; return; }
   const crumbs = zoomTrail.slice(0, i + 1), back = describe(crumbs[i].from);
+  // Each crumb names the view it goes back to: the first in full ("Overview · 9 Nov – 15 Nov 2026"), later ones by what
+  // that click changed ("Unit T_RYHPS-1", "Mon 9 Nov 2026"). The Back button uses the same short words as the last crumb.
   const label = (j) => (j === 0 ? describe(crumbs[0].from) : stepLabel(crumbs[j - 1].from, crumbs[j - 1].to));
   el.hidden = false;
-  el.innerHTML = `<button type="button" class="btn zoom-back" title="Go back to ${esc(back)} (Esc)">← Back to ${esc(back)}</button>
+  el.innerHTML = `<button type="button" class="btn zoom-back" title="Go back to ${esc(back)} (Esc)">← Back to ${esc(label(i))}</button>
     <nav class="crumbs small" aria-label="Where you have clicked through">${crumbs.map((z, j) => `<a href="#" data-steps="${i - j + 1}" title="Go back to ${esc(describe(z.from))}">${esc(label(j))}</a><span class="sep" aria-hidden="true">›</span>`).join('')}<b aria-current="page">${esc(stepLabel(crumbs[i].from, crumbs[i].to))}</b></nav>
     <span class="muted small hint">or press Esc</span>`;
   el.querySelector('.zoom-back').onclick = () => zoomOut(1);
@@ -445,13 +472,14 @@ async function timeChart(el, tableEl) {
 function drillTime(t, bucket) {
   const d = t.slice(0, 10);
   if (bucket === 'sp' || bucket === 'hour') {
-    if (state.view === 'unit') zoomTo({ day: d });
+    if (state.view === 'unit') zoomTo({ day: d }, { reveal: '#dayCard' });
     else if (state.from !== d || state.to !== d) zoomTo({ from: d, to: d, bucket: 'auto' });
     return;
   }
   const end = bucket === 'day' ? d : bucket === 'week' ? addDays(d, 6)
     : iso(new Date(Date.UTC(+d.slice(0, 4), +d.slice(5, 7), 0)));
   zoomTo({ from: d, to: end > META.max ? META.max : end, bucket: 'auto', day: state.view === 'unit' && bucket === 'day' ? d : state.day });
+  if (state.view === 'unit' && bucket === 'day') pendingReveal = '#dayCard';
 }
 
 /** Horizontal ranked bars for one dimension; click a bar to filter by it. */
@@ -540,7 +568,7 @@ async function heatmapChart(el) {
   el.style.cursor = 'pointer';
   c.on('click', (p) => {
     const d = days[p.value[0]];
-    if (state.view === 'unit') zoomTo({ day: d });
+    if (state.view === 'unit') zoomTo({ day: d }, { reveal: '#dayCard' });
     else zoomTo({ from: d, to: d, bucket: 'auto' });
   });
 }
@@ -658,14 +686,15 @@ const GLOSS = {
   avgbid: ['Avg bid', 'Average accepted bid price: bid cashflow ÷ bid volume, in £/MWh. Usually the price a unit pays to be turned down.'],
   activeperiods: ['Active periods', 'The number of half-hour periods in which the unit had an accepted action.'],
   soperiods: ['SO-flagged periods', 'Of the active periods, how many were flagged by NESO as system (rather than energy-balancing) actions.'],
-  daydetail: ['Day detail', 'For one day: the unit\'s planned output (Physical Notification), its maximum export and import limits (MEL / MIL), and the output NESO instructed through acceptances. Fetched live from Elexon.'],
+  daydetail: ['Day detail', 'For one day: the unit\'s planned output (Physical Notification), its maximum export and import limits (MEL / MIL), and the output NESO instructed. Acceptances often overlap, so the instructed output follows the newest-issued acceptance at each moment, and the unit\'s plan where none applies; this matches Elexon\'s settled volumes. Tick "Individual acceptances" in the legend to see each acceptance\'s own profile. Fetched live from Elexon.'],
   pairs: ['Bid-offer pairs', 'Each unit submits its prices in tiers called bid-offer pairs. Positive pairs (+1, +2…) are offers and negative pairs (−1, −2…) are bids; ±1 is the tier nearest the unit\'s planned output, and NESO generally works outward from there.'],
   paidprice: ['Paid price', 'Cashflow ÷ volume for that half-hour and pair, in £/MWh.'],
   pairbid: ['Pair bid price', 'The unit\'s submitted price for this tier when being turned down, in £/MWh.'],
   pairoffer: ['Pair offer price', 'The unit\'s submitted price for this tier when being turned up, in £/MWh.'],
   pairlevel: ['Pair level (MW)', 'The output level in MW that this price tier is attached to in the unit\'s submitted bid-offer data.'],
   acceptance: ['Acceptances (BOALF)', 'A Bid-Offer Acceptance is NESO\'s instruction to a unit to move to a new output level between two times. This lists every acceptance for the unit in the selected range, newest first, fetched live from Elexon.'],
-  levels: ['Level from / to (MW)', 'The output, in MW, that the unit was told to move from and to over the acceptance window.'],
+  levels: ['Output profile (MW)', 'The output, in MW, that the unit was told to follow over the acceptance window, as the levels it passes through: "410 → 38 → 0 MW" means ramp from 410 MW to 38 MW, then to 0 MW. With "Show each point" ticked, each straight piece of the profile is its own row, with the level it starts and ends at.'],
+  accpoints: ['Each point of the profile', 'Elexon publishes an acceptance as a series of points (time and MW), so one instruction can be several rows. Unticked, the table shows one row per acceptance with its whole profile; ticked, it shows every row as Elexon publishes it.'],
   stor: ['STOR', 'Short Term Operating Reserve: the acceptance relates to a reserve service NESO contracts for, rather than a normal energy action.'],
   rr: ['RR', 'Replacement Reserve: marks an acceptance that was instructed as replacement reserve.'],
   deemed: ['Deemed', 'A "deemed" bid-offer acceptance is one the settlement rules treat as accepted although it was not issued as a normal instruction.'],
@@ -799,7 +828,7 @@ function explorerHtml() {
       <div class="chart tall" id="bdChart"></div>
     </div>
     <div class="card">
-      <div class="card-head"><div><h2>Day × settlement period${tip('heatmap')}</h2><div class="sub">Each cell is one half-hour; click a day to open it.</div></div></div>
+      <div class="card-head"><div><h2>Day × settlement period${tip('heatmap')}</h2><div class="sub">Each cell is one half-hour; ${state.view === 'unit' ? 'click a day to show its detail below' : 'click a day to zoom to it'}.</div></div></div>
       <div class="chart tall" id="heatChart"></div>
     </div>
   </div>`;
@@ -868,8 +897,8 @@ async function viewUnit(main) {
     ${kv('Type', u.bm_unit_type)}${kv('GSP group', u.gsp_group)}${kv('Gen capacity', u.generation_capacity ? `${u.generation_capacity} MW` : '')}
     ${kv('Data held', info.first ? `${info.first} to ${info.last}` : 'none')}</div>
   ${explorerHtml()}
-  <div class="card" style="margin-top:14px">
-    <div class="card-head"><div><h2>Day detail${tip('daydetail')}</h2><div class="sub">Physical notification, export/import limits and accepted levels (MW, local time), fetched live from Elexon.</div></div>
+  <div class="card" id="dayCard" style="margin-top:14px">
+    <div class="card-head"><div><h2>Day detail${tip('daydetail')}</h2><div class="sub" id="dayNote">What the unit planned (physical notification) and what NESO finally instructed it to do (the newest instruction at each moment), with its export and import limits. MW, local time, fetched live from Elexon.</div></div>
       <div class="controls"><label class="small muted">Settlement day <input type="date" id="day" min="${esc(state.from)}" max="${esc(state.to)}"></label></div></div>
     <div class="chart" id="dayChart"></div>
     <div class="replay" id="replay"></div>
@@ -877,7 +906,8 @@ async function viewUnit(main) {
     <div class="sub">Settled volume and cashflow per bid-offer pair, with the submitted pair prices.</div>
     <div id="dayTable" style="margin-top:8px"></div>
   </div>
-  <div class="card" style="margin-top:14px"><div class="card-head"><div><h2>Acceptances (BOALF)${tip('acceptance')}</h2><div class="sub">Every acceptance issued to this unit in the selected range, newest first.</div></div></div><div id="accTable"></div></div>`;
+  <div class="card" style="margin-top:14px"><div class="card-head"><div><h2>Acceptances (BOALF)${tip('acceptance')}</h2><div class="sub" id="accNote">Every instruction NESO issued to this unit in the selected range, newest first: one row per acceptance.</div></div>
+    <div class="controls"><label class="small muted"><input type="checkbox" id="accRaw"> Show each point of the profile${tip('accpoints')}</label></div></div><div id="accTable"></div></div>`;
   wireExplorer();
 
   // Default the day detail to the most recent day with activity in range.
@@ -895,14 +925,46 @@ async function viewUnit(main) {
       return;
     }
     const ts = (v) => v ? new Date(v).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+    const hm = (v) => v ? new Date(v).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '';
     const yn = (v) => (v ? 'Yes' : '');
-    table($('#accTable'), [
-      { key: 'acceptance_number', label: 'Acceptance', num: true }, { key: 'acceptance_time', label: 'Accepted at', fmt: ts },
-      { key: 'time_from', label: 'From', fmt: ts }, { key: 'time_to', label: 'To', fmt: ts },
-      { key: 'level_from', label: 'Level from (MW)', num: true, tip: 'levels' }, { key: 'level_to', label: 'Level to (MW)', num: true },
-      { key: 'sp_from', label: 'SP', num: true, tip: 'period' }, { key: 'so_flag', label: 'SO flag', fmt: yn, tip: 'so' }, { key: 'stor_flag', label: 'STOR', fmt: yn, tip: 'stor' },
-      { key: 'rr_flag', label: 'RR', fmt: yn, tip: 'rr' }, { key: 'deemed_bo', label: 'Deemed', fmt: yn, tip: 'deemed' }, { key: 'amendment_flag', label: 'Amendment', tip: 'amendment' },
-    ], a.rows, { limit: 300 });
+    const flags = [{ key: 'so_flag', label: 'SO flag', fmt: yn, tip: 'so' }, { key: 'stor_flag', label: 'STOR', fmt: yn, tip: 'stor' },
+      { key: 'rr_flag', label: 'RR', fmt: yn, tip: 'rr' }, { key: 'deemed_bo', label: 'Deemed', fmt: yn, tip: 'deemed' }];
+    // Elexon lists an acceptance as one row per straight piece of its MW profile, so one instruction can be several rows.
+    // Grouped: one row per acceptance, with its profile in words ("410 → 38 → 0 MW").
+    const groups = new Map();
+    for (const r of a.rows) (groups.get(r.acceptance_number) || groups.set(r.acceptance_number, []).get(r.acceptance_number)).push(r);
+    const grouped = [...groups.entries()].map(([num, rs]) => {
+      rs.sort((x, y) => String(x.time_from).localeCompare(String(y.time_from)));
+      const lv = [rs[0].level_from];
+      for (const r of rs) { if (r.level_from !== lv[lv.length - 1]) lv.push(r.level_from); if (r.level_to !== lv[lv.length - 1]) lv.push(r.level_to); }
+      const first = rs[0], last = rs[rs.length - 1], sps = rs.map((r) => r.sp_from).filter((v) => v != null);
+      const sameDay = String(first.time_from).slice(0, 10) === String(last.time_to).slice(0, 10);
+      return { acceptance_number: num, acceptance_time: first.acceptance_time, time_from: first.time_from, time_to: last.time_to,
+        window: `${ts(first.time_from)} – ${sameDay ? hm(last.time_to) : ts(last.time_to)}`, profile: `${lv.map((v) => nf(0).format(v)).join(' → ')} MW`,
+        sp: sps.length ? (Math.min(...sps) === Math.max(...sps) ? String(Math.min(...sps)) : `${Math.min(...sps)}–${Math.max(...sps)}`) : '',
+        points: rs.length, so_flag: rs.some((r) => r.so_flag), stor_flag: rs.some((r) => r.stor_flag), rr_flag: rs.some((r) => r.rr_flag),
+        deemed_bo: rs.some((r) => r.deemed_bo), amendment_flag: [...new Set(rs.map((r) => r.amendment_flag).filter(Boolean))].join(', ') };
+    }).sort((x, y) => String(y.acceptance_time).localeCompare(String(x.acceptance_time)) || y.acceptance_number - x.acceptance_number);
+    const used = (rows) => flags.filter((f) => rows.some((r) => r[f.key]));  // flag columns that are blank all the way down say nothing
+    const draw = () => {
+      const raw = $('#accRaw').checked;
+      $('#accNote').textContent = raw
+        ? `Every point of every acceptance's MW profile in the selected range: ${nf(0).format(a.rows.length)} rows for ${nf(0).format(grouped.length)} acceptances.`
+        : `Every instruction NESO issued to this unit in the selected range, newest first: ${nf(0).format(grouped.length)} acceptances, one row each.`;
+      if (raw) table($('#accTable'), [
+        { key: 'acceptance_number', label: 'Acceptance', num: true }, { key: 'acceptance_time', label: 'Issued', fmt: ts },
+        { key: 'time_from', label: 'From', fmt: ts }, { key: 'time_to', label: 'To', fmt: ts },
+        { key: 'level_from', label: 'Level from (MW)', num: true, tip: 'levels' }, { key: 'level_to', label: 'Level to (MW)', num: true },
+        { key: 'sp_from', label: 'Period', num: true, tip: 'period' }, ...used(a.rows), { key: 'amendment_flag', label: 'Amendment', tip: 'amendment' },
+      ], a.rows, { limit: 300 });
+      else table($('#accTable'), [
+        { key: 'acceptance_number', label: 'Acceptance', num: true }, { key: 'acceptance_time', label: 'Issued', fmt: ts },
+        { key: 'window', label: 'Covers' }, { key: 'profile', label: 'Output profile', tip: 'levels' },
+        { key: 'sp', label: 'Periods', tip: 'period' }, ...used(grouped), { key: 'amendment_flag', label: 'Amendment', tip: 'amendment' },
+      ], grouped, { limit: 300 });
+    };
+    $('#accRaw').onchange = draw;
+    draw();
   });
 }
 
@@ -918,18 +980,26 @@ async function unitDay(el, tableEl) {
   const byNum = new Map();
   for (const a of d.acceptances) (byNum.get(a.acceptance_number) || byNum.set(a.acceptance_number, []).get(a.acceptance_number)).push(a);
   for (const rows of byNum.values()) { for (const a of rows) acc.push([a.time_from, a.level_from], [a.time_to, a.level_to]); acc.push([rows[rows.length - 1].time_to, null]); }
+  // The instructed output: at each moment the newest-issued acceptance covering it, or the unit's own plan where none
+  // does (the same model as the replay below). Drawing the raw acceptances instead gives a misleading saw-tooth, because
+  // each one runs back down to where the unit would otherwise be; they stay available as a series switched off by default.
+  const mdl = instructionModel(d);
+  const instructed = mdl.list.length ? mdl.effAt(mdl.N).map((v, i) => [mdl.xs[i], v]) : [];
   const o = baseOption();
   o.xAxis = { ...o.xAxis, type: 'time' };
-  o.yAxis = { ...o.yAxis, type: 'value', scale: true };
-  o.tooltip = { ...o.tooltip, trigger: 'item', formatter: (p) => tipHtml(new Date(p.value[0]).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
-    [{ name: p.seriesName, value: p.value[1], color: p.color }], (v) => `${nf(0).format(v)} MW`) };
+  o.yAxis = { ...o.yAxis, type: 'value', scale: true, axisLabel: { ...o.yAxis.axisLabel, formatter: (v) => `${nf(0).format(v)} MW` } };
+  const hm = (t) => new Date(t).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  o.tooltip = { ...o.tooltip, trigger: 'axis', formatter: (ps) => tipHtml(hm(ps[0].value[0]),
+    ps.filter((p) => p.value[1] != null).map((p) => ({ name: p.seriesName, value: p.value[1], color: p.color })), (v) => `${nf(0).format(v)} MW`) };
   const line = (name, data, c, extra = {}) => ({ name, type: 'line', data, color: css(c), symbol: 'circle', symbolSize: 4, showSymbol: false, lineStyle: { width: 2 }, connectNulls: false, ...extra });
   o.series = [
-    line('Physical notification', phys('PN'), '--s1'),
-    line('Accepted level', acc, '--s2', { showSymbol: true, z: 5 }),
-    line('Max export limit', phys('MELS'), '--other', { lineStyle: { width: 1, type: 'dashed' } }),
-    line('Max import limit', phys('MILS'), '--other2', { lineStyle: { width: 1, type: 'dashed' } }),
+    line('Plan (physical notification)', phys('PN'), '--s1', { lineStyle: { width: 2, type: 'dashed' } }),
+    line('Instructed output', instructed, '--s2', { lineStyle: { width: 2.5 }, z: 5 }),
+    line('Individual acceptances', acc, '--s4', { showSymbol: true, lineStyle: { width: 1 } }),
+    line('Max export limit', phys('MELS'), '--other', { lineStyle: { width: 1, type: 'dotted' } }),
+    line('Max import limit', phys('MILS'), '--other2', { lineStyle: { width: 1, type: 'dotted' } }),
   ];
+  o.legend.selected = { 'Individual acceptances': false };
   if (!d.physical.length && !acc.length) { el.innerHTML = '<div class="empty">No physical data or acceptances for this unit on this day.</div>'; charts.delete(el); }
   else chart(el).setOption(o, true);
   replay($('#replay'), d);
@@ -951,8 +1021,12 @@ async function unitDay(el, tableEl) {
 // newest-issued acceptance covering that moment, or its own plan (PN) if none does. Checked against Elexon's settled
 // volumes (9 unit-days, hundreds of acceptances each): the energy matches to within 0.1 MWh.
 let replayTimer = null;
-function replay(el, d) {
-  clearInterval(replayTimer);
+/**
+ * The instruction model for one unit-day, shared by the Day detail chart and the replay: each acceptance as a path over
+ * a 30-second grid, the unit's plan (PN), and effAt(k), the output after the first k instructions (newest-issued
+ * acceptance wins at each moment; the plan where none covers it). effAt(N) is what the unit was finally instructed to do.
+ */
+function instructionModel(d) {
   const ms = (s) => new Date(s).getTime();
   const byNum = new Map();
   for (const a of d.acceptances) (byNum.get(a.acceptance_number) || byNum.set(a.acceptance_number, []).get(a.acceptance_number)).push(a);
@@ -962,7 +1036,7 @@ function replay(el, d) {
     return { num, issued: ms(rows[0].acceptance_time), segs, t0: segs[0][0], t1: segs[segs.length - 1][2],
       so: rows.some((r) => r.so_flag), stor: rows.some((r) => r.stor_flag), rr: rows.some((r) => r.rr_flag), deemed: rows.some((r) => r.deemed_bo) };
   }).sort((a, b) => a.issued - b.issued || a.num - b.num);
-  if (!list.length) { el.innerHTML = '<div class="empty">NESO issued no instructions to this unit on this day.</div>'; return; }
+  if (!list.length) return { list };
 
   const pn = d.physical.filter((p) => p.dataset === 'PN').map((p) => [ms(p.timeFrom), p.levelFrom, ms(p.timeTo), p.levelTo]).sort((a, b) => a[0] - b[0]);
   const levelAt = (segs, t) => {
@@ -988,6 +1062,13 @@ function replay(el, d) {
     for (let j = 0; j < k; j++) { const p = paths[j]; for (let i = p.i0; i <= p.i1; i++) { const v = p.v[i - p.i0]; if (v != null) e[i] = v; } }
     return e;
   };
+  return { ms, list, pn, levelAt, STEP, t0, t1, n, xs, planned, paths, N, effAt };
+}
+
+function replay(el, d) {
+  clearInterval(replayTimer);
+  const { ms, list, pn, levelAt, STEP, t0, t1, n, xs, planned, paths, N, effAt } = instructionModel(d);
+  if (!list.length) { el.innerHTML = '<div class="empty">NESO issued no instructions to this unit on this day.</div>'; return; }
   const pts = (arr) => xs.map((x, i) => [x, arr[i]]);
   const hiPts = (k) => {
     if (k < 1) return [];
@@ -1144,6 +1225,7 @@ async function loadCosts() {
   const el = $('#costChart');
   if (!el) return;
   costData = await api('costs/monthly');
+  drawCoverage();
   drawCosts();
 }
 
@@ -1302,7 +1384,7 @@ async function viewConstraints(main) {
     <div class="card-head"><div><h2>${esc(CMETRICS[m].label)}, by boundary over time${tip('dayahead')}</h2><div class="sub">Day-ahead forecast, north at the top. Click a cell to zoom into that period.</div></div></div>
     <div class="chart tall" id="conHeat"></div>
   </div>
-  <div class="card" style="margin-top:14px">
+  <div class="card" id="conDetailCard" style="margin-top:14px">
     <div class="card-head"><div><h2 id="detailTitle">Boundary detail</h2><div class="sub" id="detailNote"></div></div>
       <div class="controls"><label class="small muted">Boundary <select id="bnd"></select></label></div></div>
     <div class="chart" id="conDetail"></div>
@@ -1365,7 +1447,7 @@ async function viewConstraints(main) {
     kpi('Most often at its limit', top ? bname(top.g) : '–', top ? `${pct(ratio(top.n_bind, top.n))} of the time · ${nf(0).format(top.n_bind / 2)} hours` : '', 'boundary'),
   ].join('');
 
-  const pick = (g) => drill({ bnd: g });
+  const pick = (g) => drill({ bnd: g }, { reveal: '#conDetailCard' });
   loading($('#conMap'), () => conMap($('#conMap'), totals, m, pick));
   conTable($('#conTable'), totals, thermal, pick);
   loading($('#conHeat'), async () => conHeat($('#conHeat'), agg.rows, bucket, m));
@@ -2717,7 +2799,7 @@ async function viewDfs(main) {
       <div class="card-head"><div><h2>Events</h2><div class="sub" id="dEvNote">Newest first. Click an event to see its bids and put it on the zone map.</div></div></div>
       <div id="dEvents"></div>
     </div>
-    <div class="card">
+    <div class="card" id="dStackCard">
       <div class="card-head"><div><h2>Bids in event <span id="dEvName"></span>${tip('dfsstack')}</h2><div class="sub" id="dStackNote"></div></div>
         <div class="controls"><label class="small muted">Half-hour <select id="dSp"></select></label></div></div>
       <div class="chart tall" id="dStack"></div>
@@ -2765,7 +2847,7 @@ async function viewDfs(main) {
     api('dfs/providers', dParams({ group: 'party', party: state.dp || '', zone: state.dz || '' })),
     state.dp || state.dz ? api('dfs/events', dParams()) : null]);
   dKpis($('#dKpis'), events.rows, prov.rows, (allEv || events).rows);
-  const pickEv = (e) => drill({ dev: e, dzev: state.dzev || '1' });
+  const pickEv = (e) => drill({ dev: e, dzev: state.dzev || '1' }, { reveal: '#dStackCard' });
   dEvents($('#dEvents'), events.rows, pickEv);
   const ev = events.rows.find((r) => r.event === state.dev) || events.rows[0];
   if (ev) loading($('#dStack'), () => dStack($('#dStack'), ev));
@@ -3018,7 +3100,7 @@ async function dScatter(el, events) {
   const c = chart(el);
   c.setOption(o, true);
   el.style.cursor = 'pointer';
-  c.on('click', (p) => { if (p.data?.r) drill({ dev: p.data.r.event, dzev: state.dzev || '1' }); });
+  c.on('click', (p) => { if (p.data?.r) drill({ dev: p.data.r.event, dzev: state.dzev || '1' }, { reveal: '#dStackCard' }); });
 }
 
 /** The 12 DFS zones coloured by a measure over the range, or for the selected event (zones it was closed to in grey). */
@@ -3382,7 +3464,23 @@ setInterval(watchIngest, 5000);
 
 async function loadMeta() {
   META = await api('meta');
-  $('#coverage').textContent = META.days.length ? `Data held: ${META.min} to ${META.max} (${META.days.length} days)` : 'No data held';
+  drawCoverage();
+}
+
+/** The header's "data held" note, for the data the current tab shows: each tab has its own source and coverage. */
+function drawCoverage() {
+  const el = $('#coverage');
+  if (!el || watching && el.textContent.startsWith('Updating')) return;
+  const span = (label, m, extra = '') => (m?.max ? `${label}: ${m.min} to ${m.max}${extra}` : `${label}: none held yet`);
+  const v = state.view;
+  const text = v === 'constraints' ? span('Boundary forecasts (NESO)', CMETA, CMETA.costs_through ? ` · costs to ${CMETA.costs_through}` : '')
+    : v === 'remit' ? span('REMIT outages (Elexon)', RMETA, ' (incl. planned ahead)')
+    : v === 'interconnectors' ? span('Interconnector trades (Elexon BSAD)', IMETA.trades_through ? { min: IMETA.min, max: IMETA.trades_through } : IMETA, IMETA.flows_through ? ` · flows to ${IMETA.flows_through}` : '')
+    : v === 'dfs' ? span('DFS events (NESO)', DMETA)
+    : v === 'costs' ? (costData?.through ? `Balancing costs (NESO, Elexon): to ${costData.through}` : 'Balancing costs (NESO, Elexon)')
+    : META.days.length ? `BM data (Elexon): ${META.min} to ${META.max} (${META.days.length} days)` : 'No BM data held';
+  el.textContent = text;
+  el.title = 'What the current tab has data for. Each tab has its own source; the Data tab fetches more BM data, and Refresh data on the other tabs updates theirs.';
 }
 
 /** The date range the current tab has data for: the Constraints and REMIT tabs have their own, separate from the unit data. */
@@ -3412,6 +3510,7 @@ function drawFilterBar() {
   }
 }
 
+let lastPage = null;
 async function render() {
   readHash();
   if (!META.days.length && !['data', 'costs', 'constraints', 'remit', 'interconnectors', 'dfs'].includes(state.view)) { state.view = 'data'; }
@@ -3429,6 +3528,10 @@ async function render() {
   $('#filterbar').hidden = noFilters;
   if (!noFilters) drawFilterBar();
   drawZoomTrail();
+  drawCoverage();
+  const page = state.view === 'unit' ? `unit/${state.unit}` : state.view;
+  if (page !== lastPage && lastPage != null && !pendingReveal) scrollTo(0, 0);  // a new page starts at its top
+  lastPage = page;
   const main = $('#main');
   try {
     if (state.view === 'units') await viewUnits(main);
@@ -3442,6 +3545,7 @@ async function render() {
     else viewOverview(main);
   } catch (e) { console.error(e); main.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
   pruneCharts();
+  revealPending();
 }
 
 // Nav links keep the current range and filters.
