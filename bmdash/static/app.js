@@ -3238,7 +3238,7 @@ async function dPrices(el, tableEl, bucket) {
     if (px === DPX.clr) series.push({ name: `${short}: highest clearing`, type: 'scatter', color: col, symbol: 'triangle', symbolSize: sym + 2, itemStyle: { opacity: 0.55 }, data: arr.map((r) => (r && r.clr_max !== r.clr_avg ? r.clr_max : null)), _d: d, _k: 'max' });
     series.push({ name: `${short}: market price`, type: 'line', color: col, lineStyle: { width: 1.5, type: 'dashed' }, symbol: 'none', connectNulls: false, data: arr.map((r) => (r && r.n_cleared ? r.mip_w : r?.mip_avg ?? null)), _d: d, _k: 'mip' });
   }
-  $('#dPxNote').textContent = `${px.label}: ${px.note}, in each ${bucket === 'tod' ? 'time of day' : 'period'}.`
+  $('#dPxNote').textContent = `${px.label} in each ${bucket === 'tod' ? 'time of day' : 'period'}: ${px.note}.`
     + (px === DPX.clr ? ' Triangles: the highest clearing price in the bucket. Accepted bids are paid their own price, so the average paid is lower than the clearing price.' : '')
     + ' Dashed: the market index price for the same half-hours.'
     + (state.dp || state.dz ? ' The provider or zone pick does not apply here: every bid sets the price.' : '');
