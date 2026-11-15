@@ -14,7 +14,7 @@ const DIM_LABEL = { direction: 'Direction', tech: 'Technology', fuel: 'Fuel type
   unit: 'BM unit', unit_type: 'BMU type', gsp: 'GSP group', pair: 'Bid-offer pair', so: 'SO flag' };
 const DIMS = Object.keys(DIM_LABEL);
 const state = { view: 'overview', unit: null, from: null, to: null, bucket: 'auto',
-  metric: 'net', split: 'tech', bdim: 'party', filters: {}, day: null, bnd: null, cmetric: 'bind', cview: 'boundary', rkind: 'production', rsplit: 'gsp', rt: null, rgsp: null, rlong: null,
+  metric: 'net', split: 'tech', bdim: 'party', filters: {}, day: null, bnd: null, cmetric: 'bind', cview: 'boundary', rkind: 'production', rsplit: 'gsp', rt: null, rgsp: null, rlong: null, rmsg: null,
   ic: null, icp: null, imetric: 'net', isplit: 'ic', ibd: 'party', imap: 'volume', ipdir: 'buy', it: null, iheat: 'clear',
   dmetric: 'proc', dsplit: 'none', dbd: 'party', dp: null, dev: null, ddir: null, dtag: null, dtest: null, dz: null, dzm: 'proc', dzev: null, dbin: null };
 let META = { days: [] };
@@ -26,7 +26,7 @@ function readHash() {
   state.unit = state.view === 'unit' ? decodeURIComponent(parts[1] || '') : null;
   const unitView = state.view === 'unit';
   Object.assign(state, { bucket: 'auto', metric: 'net', split: unitView ? 'direction' : 'tech', bdim: unitView ? 'pair' : 'party', day: null,
-    bnd: null, cmetric: 'bind', cview: 'boundary', rkind: 'production', rsplit: 'gsp', rt: null, rgsp: null, rlong: null,
+    bnd: null, cmetric: 'bind', cview: 'boundary', rkind: 'production', rsplit: 'gsp', rt: null, rgsp: null, rlong: null, rmsg: null,
     ic: null, icp: null, imetric: 'net', isplit: 'ic', ibd: 'party', imap: 'volume', ipdir: 'buy', it: null, iheat: 'clear',
     dmetric: 'proc', dsplit: 'none', dbd: 'party', dp: null, dev: null, ddir: null, dtag: null, dtest: null, dz: null, dzm: 'proc', dzev: null, dbin: null });
   const p = new URLSearchParams(qs || '');
@@ -49,7 +49,7 @@ function stateHash() {
   for (const k of ['from', 'to', 'bucket', 'metric', 'split', 'bdim']) if (state[k]) p.set(k, state[k]);
   if (state.view === 'unit' && state.day) p.set('day', state.day);
   if (state.view === 'constraints') for (const k of ['bnd', 'cmetric', 'cview']) if (state[k]) p.set(k, state[k]);
-  if (state.view === 'remit') for (const k of ['rkind', 'rsplit', 'rt', 'rgsp', 'rlong']) if (state[k]) p.set(k, state[k]);
+  if (state.view === 'remit') for (const k of ['rkind', 'rsplit', 'rt', 'rgsp', 'rlong', 'rmsg']) if (state[k]) p.set(k, state[k]);
   if (state.view === 'interconnectors') for (const k of ['ic', 'icp', 'imetric', 'isplit', 'ibd', 'imap', 'ipdir', 'it', 'iheat']) if (state[k]) p.set(k, state[k]);
   if (state.view === 'dfs') for (const k of ['dmetric', 'dsplit', 'dbd', 'dp', 'dev', 'ddir', 'dtag', 'dtest', 'dz', 'dzm', 'dzev', 'dbin']) if (state[k]) p.set(k, state[k]);
   for (const [k, v] of Object.entries(state.filters)) if (v.length) p.set('f.' + k, v.join('|'));
@@ -91,10 +91,17 @@ function momentLabel(t) {
 const DRILL_FIELDS = {
   unit: { day: [(v) => `detail for ${fmtDay(v)}`, 'no day detail'] },
   constraints: { bnd: [(v) => bname(v), 'all boundaries'] },
-  remit: { rgsp: [(v) => gspName(v), 'all regions'] },
+  remit: { rgsp: [(v) => gspName(v), 'all regions'], rmsg: [(v) => `outage: ${remitName(v)}`, 'outage closed'] },
   interconnectors: { ic: [(v) => icName(v), 'all interconnectors'], icp: [(v) => v, 'all counterparties'], it: [(v) => `${momentLabel(v)} selected`, 'whole range'] },
   dfs: { dev: [(v) => `event ${v}`, 'latest event'], dp: [(v) => v, 'all providers'], dz: [(v) => `zone ${v}`, 'all zones'] },
 };
+// Unit names of REMIT messages seen in the outage table, so the trail can name an opened outage (survives a reload).
+const remitNames = (() => { try { return JSON.parse(sessionStorage.getItem('remitNames')) || {}; } catch { return {}; } })();
+const remitName = (mrid) => remitNames[mrid] || 'details';
+function noteRemitNames(rows) {
+  for (const r of rows) if (r.mrid) remitNames[r.mrid] = `${r.name || r.asset}${r.start ? `, from ${+r.start.slice(8, 10)} ${MON[+r.start.slice(5, 7) - 1]}` : ''}`;
+  try { sessionStorage.setItem('remitNames', JSON.stringify(remitNames)); } catch { /* storage off */ }
+}
 const VIEW_NAME = { overview: 'Overview', units: 'Units', constraints: 'Constraints', remit: 'REMIT', interconnectors: 'Interconnectors', dfs: 'DFS' };
 
 /** What a click-through can change: the page, its range, filters and the selections that page has. */
@@ -593,7 +600,7 @@ async function bsadChart(el) {
 
 // ------------------------------------------------------------------ tables
 
-function table(el, cols, rows, { onRow, rowTip, limit = 300, sort } = {}) {
+function table(el, cols, rows, { onRow, rowTip, rowCls, limit = 300, sort } = {}) {
   let s = sort || null;
   const draw = () => {
     const data = s ? [...rows].sort((a, b) => {
@@ -602,7 +609,7 @@ function table(el, cols, rows, { onRow, rowTip, limit = 300, sort } = {}) {
       return s.desc ? -c : c;
     }) : rows;
     const head = cols.map((c) => `<th class="${c.num ? 'num' : ''} ${c.cls || ''}" data-k="${esc(c.key)}" title="Sort by ${esc(c.label)}">${esc(c.label)}${s?.key === c.key ? (s.desc ? ' ↓' : ' ↑') : ''}${c.tip ? tip(c.tip) : ''}</th>`).join('');
-    const body = data.slice(0, limit).map((r, i) => `<tr data-i="${i}" class="${onRow ? 'click' : ''}"${rowTip ? ` title="${esc(rowTip(r))}"` : ''}>${cols.map((c) =>
+    const body = data.slice(0, limit).map((r, i) => `<tr data-i="${i}" class="${onRow ? 'click' : ''} ${rowCls ? rowCls(r) : ''}"${rowTip ? ` title="${esc(rowTip(r))}"` : ''}>${cols.map((c) =>
       `<td class="${c.num ? 'num' : ''} ${c.cls || ''}">${c.html ? c.html(r) : esc(c.fmt ? c.fmt(r[c.key], r) : r[c.key] ?? '')}</td>`).join('')}</tr>`).join('');
     el.innerHTML = `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>` +
       (data.length > limit ? `<div class="muted small" style="margin-top:6px">Showing ${limit} of ${data.length} rows</div>` : '') +
@@ -610,7 +617,7 @@ function table(el, cols, rows, { onRow, rowTip, limit = 300, sort } = {}) {
     el.querySelectorAll('th').forEach((th) => th.onclick = () => {
       const k = th.dataset.k; s = s?.key === k ? { key: k, desc: !s.desc } : { key: k, desc: cols.find((c) => c.key === k).num }; draw();
     });
-    if (onRow) el.querySelectorAll('tbody tr').forEach((tr) => tr.onclick = () => onRow(data[+tr.dataset.i]));
+    if (onRow) el.querySelectorAll('tbody tr').forEach((tr) => tr.onclick = () => onRow(data[+tr.dataset.i], tr));
   };
   draw();
 }
@@ -1636,6 +1643,7 @@ async function viewRemit(main) {
       <div id="rTable"></div>
     </div>
   </div>
+  <div class="card" id="rDetail" style="margin-top:14px" hidden></div>
   <div class="card" style="margin-top:14px">
     <div class="card-head"><div><h2>Unavailable capacity over time${tip('unavail')}</h2><div class="sub">Average MW unavailable in each period. Click a bar to show that period on the map.</div></div>
       <div class="controls"><label class="small muted">Split by ${select('rsplit', RSPLITS, split)}</label></div></div>
@@ -1728,7 +1736,8 @@ async function viewRemit(main) {
     if (my !== ticket) return;
     const rows = res.rows.filter((r) => !state.rgsp || r.gsp === state.rgsp);
     $('#rTableTitle').textContent = `Outages${state.rgsp ? ` in ${gspName(state.rgsp)}` : ''}, ${label(cats[k])}`;
-    $('#rTableNote').textContent = `${rows.length} unit${rows.length === 1 ? '' : 's'}, ${mwc(rows.reduce((a, r) => a + r.mw, 0))} unavailable on average. Click a unit for its Balancing Mechanism page.`;
+    $('#rTableNote').textContent = `${rows.length} unit${rows.length === 1 ? '' : 's'}, ${mwc(rows.reduce((a, r) => a + r.mw, 0))} unavailable on average. Click an outage for its details.`;
+    noteRemitNames(rows);
     $('#rClear').hidden = !state.rgsp;
     const fmtT = (s) => new Date(s).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit' });
     table($('#rTable'), [
@@ -1740,8 +1749,18 @@ async function viewRemit(main) {
       { key: 'fuel', label: 'Fuel', cls: 'hide-sm' },
       { key: 'end', label: 'Until', fmt: (v) => fmtT(v), cls: 'hide-sm' },
       { key: 'cause', label: 'Cause', cls: 'hide-sm' },
-    ], rows, { onRow: (r) => openUnit(r.asset), rowTip: (r) => `${r.cause || ''}${r.cause ? ' · ' : ''}${fmtT(r.start)} to ${fmtT(r.end)} · open ${r.asset}'s BM page`, limit: 200 });
+    ], rows, { onRow: (r, tr) => openOutage(r.mrid, tr), rowCls: (r) => (r.mrid === state.rmsg ? 'sel' : ''),
+      rowTip: (r) => `${r.cause || ''}${r.cause ? ' · ' : ''}${fmtT(r.start)} to ${fmtT(r.end)} · click for this outage's details`, limit: 200 });
   };
+  // Open an outage's details below the map without redrawing the tab (a trail step, so Back closes it again).
+  const openOutage = (mrid, tr) => {
+    if (!mrid || mrid === state.rmsg) { if (mrid) $('#rDetail').scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
+    drill({ rmsg: mrid }, { render: false });
+    $('#rTable').querySelectorAll('tbody tr.sel').forEach((x) => x.classList.remove('sel'));
+    if (tr && tr.closest('#rTable')) tr.classList.add('sel');
+    remitDetail($('#rDetail'), openOutage, true).catch((e) => console.error(e));
+  };
+  if (state.rmsg) remitDetail($('#rDetail'), openOutage).catch((e) => console.error(e));
   $('#rClear').onclick = () => { state.rgsp = null; writeHash(true); };
 
   // Time chart
@@ -1809,6 +1828,79 @@ async function viewRemit(main) {
   slider.onchange = () => drawTable().catch((e) => console.error(e));
   if (!cats.length) { main.querySelector('#rMap').innerHTML = '<div class="empty">No periods in this range.</div>'; return; }
   go(k);
+}
+
+/** The outage panel on the REMIT tab: one REMIT message, its profile through the event, and the unit's other messages. */
+async function remitDetail(el, onPick, scroll = false) {
+  const mrid = state.rmsg;
+  el.hidden = false;
+  el.innerHTML = '<div class="empty">Loading outage…</div>';
+  if (scroll) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  let m;
+  try { m = await api('remit/message', { mrid }); } catch (e) { el.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  if (state.rmsg !== mrid) return;  // another outage was opened meanwhile
+  noteRemitNames([m]);
+  drawZoomTrail();
+  const when = (s) => new Date(s).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Europe/London' });
+  const short = (s) => new Date(s).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: 'Europe/London' });
+  const hours = (new Date(m.end) - new Date(m.start)) / 3600000;
+  const dur = hours >= 48 ? `${nf(hours >= 240 ? 0 : 1).format(hours / 24)} days` : `${nf(hours >= 10 ? 0 : 1).format(hours)} hours`;
+  const now = Date.now(), t0 = new Date(m.start).getTime(), t1 = new Date(m.end).getTime();
+  const phase = now < t0 ? 'Not started yet' : now > t1 ? 'Ended' : 'Under way now';
+  const peak = m.profile.reduce((a, p) => Math.max(a, p.mw || 0), 0) || m.unavailable_mw || 0;
+  el.innerHTML = `<div class="card-head"><div><h2>${esc(m.name || m.asset)} <span class="muted small">${esc(m.asset)}</span></h2>
+      <div class="sub">${[m.fuel, m.gsp && gspName(m.gsp), m.participant].filter(Boolean).map(esc).join(' · ')}</div></div>
+      <div class="controls"><button type="button" class="btn small" id="rdUnit" title="Open ${esc(m.asset)}'s Balancing Mechanism page: its bids, offers and costs">Balancing Mechanism page</button>
+        <button type="button" class="btn small" id="rdClose" title="Close the outage details (Esc)">Close</button></div></div>
+    <div class="grid kpis" style="margin:12px 0">
+      ${kpi('Unavailable at most', mw(peak), m.normal_mw ? `of ${mw(m.normal_mw)} normal capacity (${nf(0).format(100 * peak / m.normal_mw)}%)` : '', 'unavail')}
+      ${kpi('Type', m.planned ? 'Planned' : 'Unplanned', m.cause || 'no cause given', 'planned')}
+      ${kpi('Starts', short(m.start), phase)}
+      ${kpi('Ends', short(m.end), dur)}
+      ${kpi('Status', m.status === 'Dismissed' ? 'Withdrawn' : m.status || '–', `${m.status === 'Dismissed' ? 'not counted · ' : ''}revision ${m.revision}${m.published ? `, published ${short(m.published)}` : ''}`)}
+    </div>
+    <div class="sub" style="margin-bottom:4px">${m.profile.length > 1 ? 'Capacity unavailable through the outage, step by step as the message gives it.' : 'Capacity unavailable through the outage (the message gives one value for the whole event).'}${m.normal_mw ? ' The dashed line is the unit\'s normal capacity.' : ''}${m.status === 'Dismissed' ? ' <b>This message was withdrawn by the participant, so it is not counted in the totals above.</b>' : ''}</div>
+    <div class="chart" id="rdChart" style="height:260px"></div>
+    <h2 style="margin-top:14px">REMIT messages for this unit</h2>
+    <div class="sub">${m.n_others} message${m.n_others === 1 ? '' : 's'} held for ${esc(m.asset)}, latest event first${m.n_others > m.others.length ? ` (showing ${m.others.length})` : ''}. Click one to show it above.</div>
+    <div id="rdOthers"></div>
+    <div class="small muted" style="margin-top:8px">Message ${esc(m.msg_id)} · mRID ${esc(m.mrid)} · from ${when(m.start)} to ${when(m.end)}</div>`;
+  $('#rdUnit').onclick = () => openUnit(m.asset);
+  $('#rdClose').onclick = () => (trailAt >= 0 && zoomTrail[trailAt]?.to.rmsg === mrid && !zoomTrail[trailAt].from.rmsg ? zoomOut(1) : update({ rmsg: null }));
+
+  // Profile chart: available capacity as steps, the normal capacity dashed. One axis (MW).
+  const normal = m.normal_mw;
+  const pts = [];
+  const segs = m.profile.length ? m.profile : [{ start: m.start, end: m.end, mw: m.unavailable_mw }];
+  let last = null;
+  for (const p of segs) {
+    const a = new Date(p.start).getTime(), b = new Date(p.end).getTime(), v = p.mw || 0;
+    if (last != null && a > last) pts.push([last, null]);  // a gap in the profile
+    pts.push([a, v], [b, v]);
+    last = b;
+  }
+  const o = baseOption();
+  o.legend.show = false;
+  o.grid.top = 24;
+  o.xAxis = { ...o.xAxis, type: 'time', axisLabel: { ...o.xAxis.axisLabel, hideOverlap: true, formatter: { year: '{yyyy}', month: '{MMM} {yyyy}', day: '{d} {MMM}', hour: '{HH}:{mm}', minute: '{HH}:{mm}' } } };
+  o.yAxis = { ...o.yAxis, type: 'value', min: 0, axisLabel: { ...o.yAxis.axisLabel, formatter: (v) => nf(0).format(v) } };
+  o.tooltip.formatter = (ps) => tipHtml(short(new Date(ps[0].value[0]).toISOString()), ps.map((p) => ({ name: p.seriesName, value: p.value[1], color: p.color })), mw);
+  o.series = [{ name: 'Unavailable', type: 'line', color: css('--s2'), symbol: 'none', connectNulls: false,
+    lineStyle: { width: 2 }, areaStyle: { color: css('--s2'), opacity: 0.25 }, data: pts,
+    markLine: now > t0 - 86400000 * 3 && now < t1 + 86400000 * 3 ? { silent: true, symbol: 'none', lineStyle: { color: css('--ink2'), type: 'dashed' },
+      label: { formatter: 'now', color: css('--muted'), fontSize: 11 }, data: [{ xAxis: now }] } : undefined }];
+  if (normal != null) o.series.push({ name: 'Normal capacity', type: 'line', color: css('--other2'), symbol: 'none', lineStyle: { width: 1.5, type: 'dashed' },
+    data: [[pts[0][0], normal], [last, normal]] });
+  chart($('#rdChart')).setOption(o, true);
+
+  table($('#rdOthers'), [
+    { key: 'start', label: 'From', fmt: short },
+    { key: 'end', label: 'Until', fmt: short },
+    { key: 'unavailable_mw', label: 'Unavailable', num: true, fmt: mw, tip: 'unavail' },
+    { key: 'planned', label: 'Type', fmt: (v) => (v ? 'Planned' : 'Unplanned'), tip: 'planned' },
+    { key: 'status', label: 'Status', cls: 'hide-sm' },
+    { key: 'cause', label: 'Cause', cls: 'hide-sm wrap' },
+  ], m.others, { onRow: (r) => onPick(r.mrid), rowCls: (r) => (r.mrid === mrid ? 'sel' : ''), rowTip: (r) => (r.mrid === mrid ? 'Shown above' : 'Click to show this message above'), limit: 100 });
 }
 
 // ------------------------------------------------------------------ data / ingest view

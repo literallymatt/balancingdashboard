@@ -141,7 +141,8 @@ SQLite (see "What is stored" below).
 - **REMIT tab**: how much generating capacity was unavailable, when, and in which GSP group, from the REMIT outage
   messages that owners must publish for any change of 100 MW or more (Elexon Insights REMIT data). A map of the 14 GSP
   groups shows the average MW unavailable in one period, chosen with a slider (or Play, which steps through the
-  selected range on a fixed colour scale); the table lists the units behind it, and a stacked chart shows unavailable
+  selected range on a fixed colour scale); the table lists the units behind it (click one to open that outage: its
+  capacity through the event, cause, status and the unit's other REMIT messages, with a link to its BM page), and a stacked chart shows unavailable
   capacity over time by GSP group, fuel or planned/unplanned (click a bar to put that period on the map). It uses the
   same date range and granularity controls as the Constraints tab and reaches 28 days ahead, because planned outages
   are published in advance. Rules (`remit.py`, mirrored in `core/Remit.kt`): only each message's latest revision
