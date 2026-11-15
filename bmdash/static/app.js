@@ -15,7 +15,7 @@ const DIM_LABEL = { direction: 'Direction', tech: 'Technology', fuel: 'Fuel type
 const DIMS = Object.keys(DIM_LABEL);
 const state = { view: 'overview', unit: null, from: null, to: null, bucket: 'auto',
   metric: 'net', split: 'tech', bdim: 'party', filters: {}, day: null, bnd: null, cmetric: 'bind', cview: 'boundary', rkind: 'production', rsplit: 'gsp', rt: null, rgsp: null, rlong: null, rmsg: null,
-  ic: null, icp: null, imetric: 'net', isplit: 'ic', ibd: 'party', imap: 'volume', ipdir: 'buy', it: null, iheat: 'clear',
+  ic: null, icp: null, imetric: 'net', isplit: 'ic', ibd: 'party', imap: 'volume', ipdir: 'buy', it: null, iheat: 'clear', rvd: null, rvic: null, rvm: 'over', rvt: 'over',
   dmetric: 'proc', dsplit: 'none', dbd: 'party', dp: null, dev: null, ddir: null, dtag: null, dtest: null, dz: null, dzm: 'proc', dzev: null, dbin: null };
 let META = { days: [] };
 
@@ -27,7 +27,7 @@ function readHash() {
   const unitView = state.view === 'unit';
   Object.assign(state, { bucket: 'auto', metric: 'net', split: unitView ? 'direction' : 'tech', bdim: unitView ? 'pair' : 'party', day: null,
     bnd: null, cmetric: 'bind', cview: 'boundary', rkind: 'production', rsplit: 'gsp', rt: null, rgsp: null, rlong: null, rmsg: null,
-    ic: null, icp: null, imetric: 'net', isplit: 'ic', ibd: 'party', imap: 'volume', ipdir: 'buy', it: null, iheat: 'clear',
+    ic: null, icp: null, imetric: 'net', isplit: 'ic', ibd: 'party', imap: 'volume', ipdir: 'buy', it: null, iheat: 'clear', rvd: null, rvic: null, rvm: 'over', rvt: 'over',
     dmetric: 'proc', dsplit: 'none', dbd: 'party', dp: null, dev: null, ddir: null, dtag: null, dtest: null, dz: null, dzm: 'proc', dzev: null, dbin: null });
   const p = new URLSearchParams(qs || '');
   state.filters = {};
@@ -51,6 +51,7 @@ function stateHash() {
   if (state.view === 'constraints') for (const k of ['bnd', 'cmetric', 'cview']) if (state[k]) p.set(k, state[k]);
   if (state.view === 'remit') for (const k of ['rkind', 'rsplit', 'rt', 'rgsp', 'rlong', 'rmsg']) if (state[k]) p.set(k, state[k]);
   if (state.view === 'interconnectors') for (const k of ['ic', 'icp', 'imetric', 'isplit', 'ibd', 'imap', 'ipdir', 'it', 'iheat']) if (state[k]) p.set(k, state[k]);
+  if (state.view === 'icrev') for (const k of ['rvd', 'rvic', 'rvm', 'rvt']) if (state[k]) p.set(k, state[k]);
   if (state.view === 'dfs') for (const k of ['dmetric', 'dsplit', 'dbd', 'dp', 'dev', 'ddir', 'dtag', 'dtest', 'dz', 'dzm', 'dzev', 'dbin']) if (state[k]) p.set(k, state[k]);
   for (const [k, v] of Object.entries(state.filters)) if (v.length) p.set('f.' + k, v.join('|'));
   const path = state.view === 'unit' ? `unit/${encodeURIComponent(state.unit)}` : state.view;
@@ -93,6 +94,7 @@ const DRILL_FIELDS = {
   constraints: { bnd: [(v) => bname(v), 'all boundaries'] },
   remit: { rgsp: [(v) => gspName(v), 'all regions'], rmsg: [(v) => `outage: ${remitName(v)}`, 'outage closed'] },
   interconnectors: { ic: [(v) => icName(v), 'all interconnectors'], icp: [(v) => v, 'all counterparties'], it: [(v) => `${momentLabel(v)} selected`, 'whole range'] },
+  icrev: { rvd: [(v) => `${fmtDay(v)} in detail`, 'busiest day'], rvic: [(v) => icName(v), 'busiest link'] },
   dfs: { dev: [(v) => `event ${v}`, 'latest event'], dp: [(v) => v, 'all providers'], dz: [(v) => `zone ${v}`, 'all zones'] },
 };
 // Unit names of REMIT messages seen in the outage table, so the trail can name an opened outage (survives a reload).
@@ -102,7 +104,7 @@ function noteRemitNames(rows) {
   for (const r of rows) if (r.mrid) remitNames[r.mrid] = `${r.name || r.asset}${r.start ? `, from ${+r.start.slice(8, 10)} ${MON[+r.start.slice(5, 7) - 1]}` : ''}`;
   try { sessionStorage.setItem('remitNames', JSON.stringify(remitNames)); } catch { /* storage off */ }
 }
-const VIEW_NAME = { overview: 'Overview', units: 'Units', constraints: 'Constraints', remit: 'REMIT', interconnectors: 'Interconnectors', dfs: 'DFS' };
+const VIEW_NAME = { overview: 'Overview', units: 'Units', constraints: 'Constraints', remit: 'REMIT', interconnectors: 'Interconnectors', icrev: 'IC reversals', dfs: 'DFS' };
 
 /** What a click-through can change: the page, its range, filters and the selections that page has. */
 function drillKey() {
@@ -734,6 +736,9 @@ const GLOSS = {
   ictype: ['Trade types', 'Counterparty trades are with a trader holding capacity on the link. SO-SO trades are with the system operator on the other side (RTE in France, Statnett in Norway, EirGrid and SONI in Ireland). SO-flagged trades were for a system reason, such as relieving a constraint, rather than the national energy balance.'],
   iccp: ['Counterparties', 'Who NESO traded with: the trading company for counterparty trades, or the neighbouring system operator for SO-SO trades. Tap a bar to show only that counterparty.'],
   icflow: ['Physical flow', 'What actually flowed through each interconnector, from Elexon\'s half-hourly generation by fuel type: positive into GB (import), negative out of GB (export). NESO\'s trades change these flows from what the market scheduled.'],
+  icrev: ['Flow reversals', 'NESO balances GB partly by buying and selling energy over the interconnectors. If a link is exporting and NESO buys more than the export, the flow turns round and GB imports instead (and the other way when it sells). A link-hour counts as reversed when the flow without NESO and the actual flow point opposite ways, each by at least 50 MW.'],
+  icrevest: ['Estimated schedule', 'The day-ahead schedule on each link is not published, so it is estimated as the flow NESO did not cause: the metered flow minus NESO\'s net trades on that link in the hour. The interconnector units\' notifications already include NESO\'s trades, so they cannot be used instead. The estimate also includes the intraday market\'s trades. A trade is against the schedule when it points the other way to this estimate; hours where the estimate is under 50 MW either way are not counted, because the direction is unclear.'],
+  icrevcap: ['The 300 MW / 1,500 MW limit', 'From 20 May 2026 NESO may trade at most 1,500 MW per hour within day against the day-ahead direction across IFA, IFA2, ElecLink, Viking Link, BritNed and Nemo Link, and at most 300 MW on any one of them (NESO market notice, 14 May 2026; a short-term measure until the end of 2026, agreed with the EU system operators). Trading with the day-ahead direction is not limited, and North Sea Link and the Irish links are not covered. Only counterparty trades are counted.'],
   dfs: ['Demand Flexibility Service', 'NESO pays households and businesses, through registered providers (suppliers and aggregators), to shift when they use electricity for set half-hours: to use less at busy times (turn down) or, since April 2026, more when there is spare wind (turn up). Each event, NESO states how much it needs; providers bid volumes at a price and NESO accepts them, cheapest first.'],
   dfstag: ['Direction and reason', 'Turn-down (Downwards) events ask for less demand, turn-up (Upwards) events for more. NESO tags each event Energy, when it is for the national balance between supply and demand, or System, when it is for a network reason such as a constraint. The 2025/26 archive does not say, so those events show as "Not stated".'],
   dfstest: ['Test events', 'NESO occasionally runs test events to check providers can respond. They are left out unless this is ticked.'],
@@ -2700,6 +2705,236 @@ function icWho(chartEl, tableEl, rows, all, dir, when) {
     rowTip: (r) => `${r.kind} · ${r.so} · ${r.n_hh} half-hour${r.n_hh === 1 ? '' : 's'} with trades. Click to show only trades with ${r.party}`, limit: 60 });
 }
 
+// ------------------------------------------------------------------ interconnector flow reversals (the 300 MW / 1,500 MW limit)
+// From 20 May 2026 NESO may trade at most 1,500 MW per hour within day against the day-ahead direction across the continental
+// links, and at most 300 MW on any one of them. /api/ic/reversals estimates the schedule as the flow without NESO's trades and
+// checks each hour; see the comment above REV_LINKS in api.py.
+
+const RVM = { over: 'Hours over the 300 MW link limit', flip: 'Hours NESO reversed the flow', against: 'Energy traded against the schedule' };
+const RVT = [['over', 'Over the 300 MW link limit'], ['flip', 'Flow reversed'], ['all', 'Every hour traded against the schedule']];
+const hourLabel = (d, h) => `${fmtDay(d)} ${String(h).padStart(2, '0')}:00–${String((h + 1) % 24).padStart(2, '0')}:00`;
+const signedMw = (v) => (v == null ? '–' : `${mwc(Math.abs(v))} ${v >= 0 ? 'in' : 'out'}`);
+
+async function viewReversals(main) {
+  if (!IMETA.max) {
+    main.innerHTML = `<div class="card"><h2>Interconnector flow reversals${tip('icrev')}</h2>
+      <div class="empty">No interconnector data yet. <button type="button" class="btn" id="conRefresh">Download it</button> (a few minutes the first time; it is fetched with the Total costs data).</div></div>`;
+    wireConRefresh();
+    return;
+  }
+  const measure = RVM[state.rvm] ? state.rvm : 'over';
+  const only = RVT.some(([k]) => k === state.rvt) ? state.rvt : 'over';
+  const days = (parseDay(state.to) - parseDay(state.from)) / DAY + 1;
+  const b0 = resolveBucket();
+  const bucket = ['sp', 'hour'].includes(b0) ? (days <= 3 ? 'hour' : 'day') : b0 === 'tod' ? 'day' : b0;
+  main.innerHTML = `
+  <div class="card" style="margin-bottom:14px">
+    <h2>When NESO turns the interconnectors round${tip('icrev')}</h2>
+    <div class="small muted" style="line-height:1.55;margin-top:6px">
+      NESO buys and sells energy over the interconnectors to balance GB. Buy enough while a link is exporting and the flow reverses: GB imports instead.
+      Since <b style="color:var(--ink)">20 May 2026</b>, NESO's trades <i>against</i> the day-ahead direction on the links to France, Belgium, the Netherlands and Denmark are limited to
+      <b style="color:var(--ink)">300 MW per link</b> and <b style="color:var(--ink)">1,500 MW in total</b> in any hour. Trades in the same direction as the day-ahead flow are not limited.
+      The day-ahead schedule is not published, so it is estimated as the flow without NESO's trades${tip('icrevest')}: treat the breaches below as <i>likely</i> rather than certain.
+    </div>
+  </div>
+  <div class="grid kpis" id="rvKpis"></div>
+  <div class="card">
+    <div class="card-head"><div><h2>Trading against the schedule, day × hour${tip('icrevcap')}</h2><div class="sub" id="rvHeatNote"></div></div></div>
+    <div class="chart tall" id="rvHeat"></div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <div class="card-head"><div><h2 id="rvDayTitle">One day, one link</h2><div class="sub" id="rvDayNote"></div></div>
+      <div class="controls"><label class="small muted">Link <select id="rvic"></select></label></div></div>
+    <div class="chart tall" id="rvDay"></div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <div class="card-head"><div><h2>${esc(RVM[measure])}, by link</h2><div class="sub" id="rvTimeNote"></div></div>
+      <div class="controls"><label class="small muted">Measure ${select('rvm', Object.entries(RVM), measure)}</label></div></div>
+    <div class="chart" id="rvTime"></div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <div class="card-head"><div><h2>The hours</h2><div class="sub" id="rvTableNote"></div></div>
+      <div class="controls"><label class="small muted">Show ${select('rvt', RVT, only)}</label></div></div>
+    <div id="rvTable"></div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <h2>How this is worked out</h2>
+    <div class="small muted" style="line-height:1.55;margin-top:6px">
+      <b style="color:var(--ink)">The rule</b>: NESO market notice <i>Interconnector trading restrictions for NESO</i> (14 May 2026, NESO Data Portal): from 20 May 2026, within-day trading in the opposite direction to the day-ahead schedule is limited to 1,500 MW per hour across IFA, IFA2, ElecLink, Viking Link, BritNed and Nemo Link, with at most 300 MW on any one of them, as a short-term measure until the end of 2026. North Sea Link and the Irish links are not covered, so they show reversals but never breaches.<br>
+      <b style="color:var(--ink)">Each hour, each link</b>: the metered flow (Elexon FUELHH, averaged over the hour's two half-hours) minus NESO's net trades on the link (Elexon BSAD, MWh over the hour = average MW) gives the flow without NESO, the estimated schedule. NESO <i>reversed</i> the flow when the two point opposite ways and both are at least 50 MW. A counterparty trade is <i>against the schedule</i> when it points the other way to the estimated schedule; SO-SO trades are agreed with the neighbouring operator, so they are not counted. A link is <i>over the limit</i> when its trades against the schedule exceed 300 MW (1 MW is allowed for rounding); an hour is over the total limit when they exceed 1,500 MW across the six links.<br>
+      <b style="color:var(--ink)">Limits of the estimate</b>: the flow without NESO also contains the intraday market's own trades, so it is not exactly the day-ahead schedule; hours where it is under 50 MW either way are never counted. The hourly volumes match NESO's published interconnector auction results, and NESO's trades stop at exactly 300 MW on the links this method marks as running against the schedule, which supports it.
+    </div>
+  </div>`;
+  for (const k of ['rvm', 'rvt']) $('#' + k).onchange = (e) => update({ [k]: e.target.value }, true);
+  const data = await api('ic/reversals', { from: state.from, to: state.to, bucket });
+  const rules = data.rules, s = data.summary;
+  const before = state.to < rules.from;
+  $('#rvKpis').innerHTML = [
+    kpi('Hours NESO reversed a link', nf(0).format(s.flip_hours), `${nf(0).format(s.flip_link_hours)} link-hours, of ${nf(0).format(s.hours)} hours`, 'icrev'),
+    kpi('Traded against the schedule', mwh(s.against_mwh), 'on the six continental links', 'icrevest'),
+    kpi('Hours over 300 MW on a link', before ? 'n/a' : nf(0).format(s.over_hours), before ? 'the limit started on 20 May 2026'
+      : `${nf(0).format(s.over_link_hours)} link-hours · worst ${mwc(s.max_link_against)}`, 'icrevcap'),
+    kpi('Hours over 1,500 MW in total', before ? 'n/a' : nf(0).format(s.total_over_hours), before ? 'the limit started on 20 May 2026'
+      : `of ${nf(0).format(s.restricted_hours)} hours under the limit · worst ${mwc(s.max_against)}`, 'icrevcap'),
+  ].join('');
+
+  // The day shown in detail: the one picked, else the day of the worst hour in range.
+  const worst = [...data.hours].sort((a, b) => b.n_over - a.n_over || b.against - a.against || b.flips - a.flips)[0];
+  const day = state.rvd && state.rvd >= state.from && state.rvd <= state.to ? state.rvd : worst?.d || state.to;
+  const pickDay = (d, ic) => drill({ rvd: d, ...(ic ? { rvic: ic } : {}) });
+  rvHeat($('#rvHeat'), data, day, pickDay);
+  rvTime($('#rvTime'), data.series, bucket, measure);
+  rvTable($('#rvTable'), data, only, pickDay);
+  await loading($('#rvDay'), () => rvDay($('#rvDay'), day, worst));
+}
+
+/** Day x clock-hour grid coloured by the MW NESO traded against the schedule across the six links; a dot marks an hour
+ *  with a link over 300 MW. Click a cell to show that day below. */
+function rvHeat(el, data, day, onPick) {
+  const rules = data.rules;
+  const ds = [];
+  for (let d = state.from; d <= state.to; d = addDays(d, 1)) ds.push(d);
+  if (ds.length > 400) { el.innerHTML = '<div class="empty">Narrow the range to 400 days or fewer to see the hourly grid.</div>'; charts.delete(el); return; }
+  const di = new Map(ds.map((d, i) => [d, i]));
+  const pts = data.hours.filter((h) => di.has(h.d) && h.against > 0).map((h) => ({ value: [di.get(h.d), Math.min(h.hour, 23), h.against], h }));
+  const dots = data.hours.filter((h) => di.has(h.d) && h.n_over).map((h) => ({ value: [di.get(h.d), Math.min(h.hour, 23)], h }));
+  $('#rvHeatNote').textContent = `Each cell is one hour: the MW NESO traded against the estimated day-ahead direction across the six continental links. Darker red goes over the 1,500 MW total; a dot marks an hour with at least one link over 300 MW. The limit applies from ${fmtDay(rules.from)}. Click an hour to see that day below.`;
+  if (!pts.length && !dots.length) { el.innerHTML = '<div class="empty">NESO did not trade against the schedule in this range.</div>'; charts.delete(el); return; }
+  const o = baseOption();
+  o.legend.show = false;
+  o.grid = { left: 8, right: 16, top: 8, bottom: 48, containLabel: true };
+  o.tooltip = { ...o.tooltip, trigger: 'item', formatter: (p) => {
+    const h = p.data.h;
+    const lines = [`${mwc(h.against)} against the schedule${h.d >= rules.from ? (h.total_over ? ' (over the 1,500 MW total)' : ` of ${mwc(rules.total_cap)} allowed`) : ' (before the limit)'}`,
+      h.n_over ? `${h.n_over} link${h.n_over === 1 ? '' : 's'} over 300 MW` : '', h.flips ? `${h.flips} link${h.flips === 1 ? '' : 's'} reversed` : '',
+      h.links.length ? `Links: ${h.links.map(icName).join(', ')}` : ''];
+    return tipLines(hourLabel(h.d, h.hour), lines) + clickHint('Click to see this day link by link');
+  } };
+  o.xAxis = { ...o.xAxis, type: 'category', data: ds.map((d) => `${+d.slice(8)} ${MON[+d.slice(5, 7) - 1]}`), splitArea: { show: false } };
+  o.yAxis = { ...o.yAxis, type: 'category', data: Array.from({ length: 24 }, (_, i) => `${String(i).padStart(2, '0')}:00`), inverse: true,
+    axisLabel: { ...o.yAxis.axisLabel, interval: 3 }, splitLine: { show: false } };
+  o.visualMap = { type: 'piecewise', orient: 'horizontal', left: 'center', bottom: 0, dimension: 2, seriesIndex: 0, itemWidth: 14, itemHeight: 10,
+    textStyle: { color: css('--muted'), fontSize: 11 },
+    pieces: [{ min: 0, max: 300, label: 'up to 300 MW', color: css('--seq-lo') }, { min: 300, max: 1000, label: '300 MW–1 GW', color: css('--s4') },
+      { min: 1000, max: rules.total_cap + 1, label: `1–${nf(1).format(rules.total_cap / 1000)} GW`, color: css('--s2') },
+      { min: rules.total_cap + 1, label: `over ${nf(1).format(rules.total_cap / 1000)} GW`, color: css('--critical') }] };
+  const start = di.get(rules.from), sel = di.get(day);
+  o.series = [
+    { type: 'heatmap', data: pts, progressive: 0, itemStyle: ds.length <= 45 ? { borderColor: css('--surface'), borderWidth: 1 } : {},
+      emphasis: { itemStyle: { borderColor: css('--ink'), borderWidth: 1 } },
+      markLine: { silent: true, symbol: 'none', label: { show: true, formatter: '{b}', color: css('--ink2'), fontSize: 11, position: 'insideEndTop' },
+        data: [...(start != null && start > 0 ? [{ xAxis: start, name: 'Limit starts', lineStyle: { color: css('--ink2'), type: 'dashed' } }] : []),
+          ...(sel != null ? [{ xAxis: sel, name: '', lineStyle: { color: css('--ink'), width: 1, type: 'dotted' } }] : [])] } },
+    { type: 'scatter', data: dots, symbolSize: ds.length > 120 ? 3 : ds.length > 45 ? 4 : 6, itemStyle: { color: css('--ink') }, z: 3 },
+  ];
+  const c = chart(el);
+  c.setOption(o, true);
+  el.style.cursor = 'pointer';
+  c.on('click', (p) => {
+    const h = p.data?.h;
+    if (!h) return;
+    const top = data.events.filter((e) => e.d === h.d && e.hour === h.hour).sort((a, b) => b.against - a.against)[0];
+    onPick(h.d, top?.ic);
+  });
+}
+
+/** One day for one link, hour by hour: the metered flow, the estimated schedule (flow without NESO) and NESO's trades,
+ *  red where they ran against the schedule by more than 300 MW. */
+async function rvDay(el, day, worst) {
+  const d = await api('ic/reversals', { from: day, to: day, bucket: 'hour' });
+  const rules = d.rules;
+  const byIc = new Map();
+  for (const r of d.detail) (byIc.get(r.ic) || byIc.set(r.ic, []).get(r.ic)).push(r);
+  const score = (ic) => (byIc.get(ic) || []).reduce((a, r) => a + r.over * 1e6 + r.against + (r.flipped ? 1e3 : 0), 0);
+  const links = IC_ORDER.filter((k) => byIc.has(k));
+  const ic = state.rvic && byIc.has(state.rvic) ? state.rvic : [...links].sort((a, b) => score(b) - score(a))[0];
+  const sel = $('#rvic');
+  sel.innerHTML = links.map((k) => `<option value="${k}" ${k === ic ? 'selected' : ''}>${esc(icName(k))}${rules.links.includes(k) ? '' : ' (not limited)'}</option>`).join('');
+  sel.onchange = (e) => update({ rvic: e.target.value, rvd: day }, true);
+  if (!ic) { el.innerHTML = '<div class="empty">No flow data for this day.</div>'; charts.delete(el); return; }
+  const rows = byIc.get(ic).sort((a, b) => a.hour - b.hour);
+  const limited = rules.links.includes(ic) && day >= rules.from;
+  const nOver = rows.filter((r) => r.over).length, nFlip = rows.filter((r) => r.flipped).length;
+  $('#rvDayTitle').textContent = `${icName(ic)}, ${fmtDay(day)}`;
+  $('#rvDayNote').textContent = `Solid line: what flowed. Dashed line: the flow without NESO's trades (the estimated schedule). Shaded: hours NESO reversed the flow. Bars: NESO's net trades, `
+    + `grey with the schedule, amber against it${limited ? ', red over 300 MW against it' : ''}. Above zero is into GB. `
+    + `${nFlip ? `NESO reversed the flow in ${nFlip} hour${nFlip === 1 ? '' : 's'}` : 'No reversals'}${limited ? `; ${nOver ? `${nOver} hour${nOver === 1 ? '' : 's'} over the 300 MW limit` : 'no hours over the limit'}` : rules.links.includes(ic) ? ' (before the limit started)' : ' (this link is not covered by the limit)'}.`;
+  const cats = rows.map((r) => `${String(Math.min(r.hour, 23)).padStart(2, '0')}:00`);
+  const o = baseOption();
+  o.xAxis = { ...o.xAxis, type: 'category', data: cats };
+  o.yAxis = { ...o.yAxis, type: 'value', axisLabel: { ...o.yAxis.axisLabel, formatter: (v) => `${nf(0).format(v)} MW` } };
+  o.tooltip.formatter = (ps) => {
+    const r = rows[ps[0].dataIndex];
+    return tipLines(hourLabel(day, r.hour), [`Flowed: ${signedMw(r.flow)}`, `Without NESO (schedule): ${signedMw(r.pre)}`,
+      `NESO net trades: ${r.neso >= 0 ? 'bought' : 'sold'} ${mwc(Math.abs(r.neso))}${r.cp !== r.neso ? ` (counterparty ${mwc(Math.abs(r.cp))})` : ''}`,
+      r.against ? `Against the schedule: ${mwc(r.against)}${r.over ? ' (over the 300 MW limit)' : ''}` : 'With the schedule (not limited)',
+      r.flipped ? 'NESO reversed the flow' : '']);
+  };
+  const barCol = (r) => (r.over ? css('--critical') : r.against ? css('--s4') : css('--other'));
+  o.series = [
+    { name: 'NESO net trades', type: 'bar', color: css('--s4'), barWidth: '55%', barMaxWidth: 26, barGap: '-100%', data: rows.map((r) => ({ value: r.neso, itemStyle: { color: barCol(r) } })),
+      markLine: limited ? { silent: true, symbol: 'none', lineStyle: { color: css('--critical'), type: 'dotted' }, label: { formatter: '{b}', position: 'insideEndTop', color: css('--muted'), fontSize: 10 },
+        data: [{ yAxis: rules.link_cap, name: '+300 MW' }, { yAxis: -rules.link_cap, name: '−300 MW' }] } : undefined },
+    { name: 'Flowed', type: 'line', step: 'middle', symbol: 'none', lineStyle: { width: 2.5 }, color: css(IC[ic]?.col || '--s1'), data: rows.map((r) => r.flow) },
+    { name: 'Without NESO (schedule)', type: 'line', step: 'middle', symbol: 'none', lineStyle: { width: 2, type: 'dashed' }, color: css('--ink2'), data: rows.map((r) => r.pre),
+    },
+  ];
+  // Reversed hours: a pale full-height band behind the bars (a markArea has no width on a single category).
+  const top = Math.max(1, ...rows.flatMap((r) => [Math.abs(r.flow), Math.abs(r.pre), Math.abs(r.neso)])) * 1.05;
+  const band = (sign) => ({ name: 'Reversed', type: 'bar', silent: true, barWidth: '100%', barGap: '-100%', z: 0, tooltip: { show: false },
+    itemStyle: { color: 'rgba(237, 161, 0, 0.18)' }, data: rows.map((r) => (r.flipped ? sign * top : null)) });
+  if (nFlip) o.series.unshift(band(1), band(-1));
+  o.legend.data = ['NESO net trades', 'Flowed', 'Without NESO (schedule)'];
+  chart(el).setOption(o, true);
+}
+
+/** Stacked bars per period, one colour per link: hours over 300 MW, hours reversed, or MWh traded against the schedule. */
+function rvTime(el, series, bucket, measure) {
+  const key = { over: 'over_hours', flip: 'flip_hours', against: 'against_mwh' }[measure];
+  const fmt = measure === 'against' ? mwh : (v) => `${nf(0).format(v)} h`;
+  const cats = allBuckets(bucket, series);
+  const idx = new Map(cats.map((t, i) => [String(t), i]));
+  const present = new Set(series.filter((r) => r[key]).map((r) => r.ic));
+  const keys = IC_ORDER.filter((k) => present.has(k));
+  $('#rvTimeNote').textContent = `Per ${bucket}${measure === 'over' ? ': link-hours over the 300 MW limit (from 20 May 2026)' : measure === 'flip' ? ': hours in which NESO\'s trades turned the link\'s flow round' : ': MWh of counterparty trades against the estimated schedule'}. Click a bar to zoom in.`;
+  if (!keys.length) { el.innerHTML = '<div class="empty">Nothing to show for this range.</div>'; charts.delete(el); return; }
+  const o = baseOption();
+  o.xAxis = { ...o.xAxis, type: 'category', data: cats.map((t) => bucketLabel(t, bucket)) };
+  o.yAxis = { ...o.yAxis, type: 'value', minInterval: measure === 'against' ? 0 : 1, axisLabel: { ...o.yAxis.axisLabel, formatter: (v) => (measure === 'against' ? mwh(v) : nf(0).format(v)) } };
+  o.tooltip.formatter = (ps) => tipHtml(ps[0].axisValueLabel, ps.map((p) => ({ name: p.seriesName, value: p.value, color: p.color })), fmt,
+    ps.reduce((a, p) => a + (p.value || 0), 0)).replace('No accepted actions', 'None') + clickHint(drillHint(cats[ps[0].dataIndex], bucket));
+  o.series = keys.map((k) => {
+    const v = new Array(cats.length).fill(null);
+    for (const r of series) if (r.ic === k && idx.has(String(r.t))) v[idx.get(String(r.t))] = r[key] || null;
+    return { name: icName(k), type: 'bar', stack: 'a', barMaxWidth: 28, color: css(IC[k].col), emphasis: { disabled: true }, data: v };
+  });
+  o.legend.show = keys.length > 1;
+  const c = chart(el);
+  c.setOption(o, true);
+  c.getZr().off('click');
+  c.getZr().on('click', (e) => {
+    const [i] = c.convertFromPixel({ seriesIndex: 0 }, [e.offsetX, e.offsetY]);
+    if (i >= 0 && i < cats.length) drillTime(String(cats[i]), bucket);
+  });
+}
+
+/** The hours behind it all, worst first; click one to show its day and link above. */
+function rvTable(el, data, only, onPick) {
+  const rows = data.events.filter((e) => (only === 'over' ? e.over : only === 'flip' ? e.flipped : e.against > 0))
+    .map((e) => ({ ...e, when: `${e.d}T${String(e.hour).padStart(2, '0')}`, name: icName(e.ic) }));
+  $('#rvTableNote').textContent = `${nf(0).format(rows.length)} link-hours${data.n_events > data.events.length ? ` among the worst ${nf(0).format(data.events.length)}` : ''}. The further the schedule is from zero, the surer the call. Click a row to see that day above.`;
+  table(el, [
+    { key: 'when', label: 'Hour', html: (r) => esc(hourLabel(r.d, r.hour)) },
+    { key: 'name', label: 'Link', html: (r) => `<span class="tag"><span class="dot" style="background:${css(IC[r.ic]?.col || '--other')}"></span>${esc(r.name)}</span>` },
+    { key: 'pre', label: 'Schedule (est.)', num: true, fmt: signedMw, tip: 'icrevest' },
+    { key: 'cp', label: 'NESO traded', num: true, fmt: (v, r) => `${r.neso >= 0 ? 'bought' : 'sold'} ${mwc(Math.abs(r.neso))}` },
+    { key: 'flow', label: 'Flowed', num: true, fmt: signedMw },
+    { key: 'against', label: 'Against schedule', num: true, fmt: (v) => (v ? mwc(v) : '–'), tip: 'icrevcap' },
+    { key: 'flipped', label: 'Reversed', fmt: (v) => (v ? 'yes' : '') },
+    { key: 'over', label: 'Over 300 MW', html: (r) => (r.over ? '<b style="color:var(--critical)">yes</b>' : r.d < data.rules.from && r.against > data.rules.link_cap && data.rules.links.includes(r.ic) ? '<span class="muted small">before limit</span>' : '') },
+  ], rows, { onRow: (r) => onPick(r.d, r.ic), rowTip: (r) => `Show ${r.name} on ${fmtDay(r.d)}`, limit: 300 });
+}
+
 // ------------------------------------------------------------------ Demand Flexibility Service
 
 const DIR_LABEL = { Downwards: 'Turn down (use less)', Upwards: 'Turn up (use more)' };
@@ -3484,8 +3719,8 @@ function drawCoverage() {
 }
 
 /** The date range the current tab has data for: the Constraints and REMIT tabs have their own, separate from the unit data. */
-const extent = () => (state.view === 'constraints' ? CMETA : state.view === 'remit' ? RMETA : state.view === 'interconnectors' ? IMETA : state.view === 'dfs' ? DMETA : META);
-const ownRange = () => ['constraints', 'remit', 'interconnectors', 'dfs'].includes(state.view);
+const extent = () => (state.view === 'constraints' ? CMETA : state.view === 'remit' ? RMETA : ['interconnectors', 'icrev'].includes(state.view) ? IMETA : state.view === 'dfs' ? DMETA : META);
+const ownRange = () => ['constraints', 'remit', 'interconnectors', 'icrev', 'dfs'].includes(state.view);
 
 function drawFilterBar() {
   const E = extent();
@@ -3513,7 +3748,7 @@ function drawFilterBar() {
 let lastPage = null;
 async function render() {
   readHash();
-  if (!META.days.length && !['data', 'costs', 'constraints', 'remit', 'interconnectors', 'dfs'].includes(state.view)) { state.view = 'data'; }
+  if (!META.days.length && !['data', 'costs', 'constraints', 'remit', 'interconnectors', 'icrev', 'dfs'].includes(state.view)) { state.view = 'data'; }
   const E = extent();
   if (E.max) {
     // REMIT reaches weeks ahead (planned outages), so it opens on the weeks around today rather than at its far end.
@@ -3524,7 +3759,7 @@ async function render() {
   }
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.view === (state.view === 'unit' ? 'units' : state.view)));
   $('#nav a.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }); // phones: the tab row scrolls sideways
-  const noFilters = state.view === 'data' || state.view === 'costs' || (state.view === 'constraints' && !CMETA.max) || (state.view === 'remit' && !RMETA.max) || (state.view === 'interconnectors' && !IMETA.max) || (state.view === 'dfs' && !DMETA.max);
+  const noFilters = state.view === 'data' || state.view === 'costs' || (state.view === 'constraints' && !CMETA.max) || (state.view === 'remit' && !RMETA.max) || (['interconnectors', 'icrev'].includes(state.view) && !IMETA.max) || (state.view === 'dfs' && !DMETA.max);
   $('#filterbar').hidden = noFilters;
   if (!noFilters) drawFilterBar();
   drawZoomTrail();
@@ -3540,6 +3775,7 @@ async function render() {
     else if (state.view === 'constraints') await viewConstraints(main);
     else if (state.view === 'remit') await viewRemit(main);
     else if (state.view === 'interconnectors') await viewInterconnectors(main);
+    else if (state.view === 'icrev') await viewReversals(main);
     else if (state.view === 'dfs') await viewDfs(main);
     else if (state.view === 'data') await viewData(main);
     else viewOverview(main);

@@ -190,6 +190,24 @@ SQLite (see "What is stored" below).
   `data/ic_trade.parquet` (summed per settlement period, link, counterparty, kind, SO flag and direction; about 80k rows) and
   `data/ic_flow_hh.parquet` (phone: the `ic_trade` and `ic_flow` tables). Landing points are approximate (outline: Natural Earth,
   public domain, `static/vendor/nweurope.json`).
+- **IC reversals tab**: when NESO's interconnector trades turned a link's flow round, and the hours it traded more *against* the
+  day-ahead direction than it is allowed to. From 20 May 2026 (NESO market notice *Interconnector trading restrictions for NESO*,
+  14 May 2026, a short-term measure until the end of 2026) NESO may trade at most 1,500 MW per hour within day against the day-ahead
+  schedule across IFA, IFA2, ElecLink, Viking Link, BritNed and Nemo Link, and at most 300 MW on any one of them; trading with the
+  day-ahead direction is not limited, and North Sea Link and the Irish links are not covered. Elexon does not publish the day-ahead
+  schedule, and the interconnector units' notifications already include NESO's trades (they match the metered flow), so the schedule
+  is estimated per link and clock hour as the metered flow (`FUELHH`, averaged over the hour) minus NESO's net trades (BSAD MWh over
+  the hour, i.e. average MW). That estimate also holds the intraday market's trades. NESO *reversed* a link when the estimate and the
+  metered flow point opposite ways, each by at least 50 MW; a counterparty trade is *against the schedule* when it points the other
+  way to the estimate (hours where the estimate is under 50 MW either way are never counted; SO-SO trades are not counted towards the
+  limit). A link-hour is *over the limit* above 300 MW (1 MW allowed for rounding), an hour above 1,500 MW across the six links. The
+  hourly volumes match NESO's own interconnector auction results (NESO Data Portal, *Interconnector Requirement and Auction Summary
+  Data*), and NESO's trades stop at exactly 300 MW on the links the estimate marks as running against the schedule, which supports
+  it; still, the breaches are best read as likely rather than certain. The tab shows a day x hour grid of MW traded against the
+  schedule (coloured against the 1,500 MW limit, a dot where a link went over 300 MW), one link's day hour by hour (metered flow,
+  flow without NESO, NESO's trades, reversed hours shaded), link-hours over the limit, reversals or energy against the schedule per
+  period, and the hours themselves, worst first. Computed on the fly from the Interconnectors tab's stored trades and flows
+  (`/api/ic/reversals`, mirrored in `core/Interconnectors.kt`), so it needs no extra download.
 - **DFS tab**: NESO's Demand Flexibility Service, in which households and businesses are paid, through registered providers
   (suppliers and aggregators), to shift their demand for set half-hours: *turn-down* (Downwards) events ask them to use less,
   *turn-up* (Upwards, from April 2026) to use more. NESO tags each event *Energy* or *System*. Providers bid a volume per DFS unit

@@ -57,6 +57,7 @@ class Api(private val db: SqlDb, private val control: IngestControl, private val
         r == "ic/prices" -> Interconnectors.prices(db, Interconnectors.Filter(p, date(p, "from"), date(p, "to"), BUCKETS),
             BUCKETS[p["bucket"] ?: "day"] ?: throw HttpError(400, "bad bucket or group"), p["group"] ?: "none")
         r == "ic/flow" -> Interconnectors.flow(db, date(p, "from"), date(p, "to"), BUCKETS[p["bucket"] ?: "day"] ?: throw HttpError(400, "bad bucket"), p["ic"])
+        r == "ic/reversals" -> Interconnectors.reversals(db, date(p, "from"), date(p, "to"), p["bucket"] ?: "day")
         r == "dfs/meta" -> Dfs.meta(db, (costs?.status() ?: emptyMap()))
         r == "dfs/agg" -> Dfs.agg(db, Dfs.Filter(p, date(p, "from"), date(p, "to")),
             BUCKETS[p["bucket"] ?: "day"] ?: throw HttpError(400, "bad bucket or group"), p["group"] ?: "none", p["party"], p["zone"], (p["top"] ?: "8").toInt(), p["rank"] ?: "cash")

@@ -550,6 +550,102 @@ def ic_flow(start: date = Query(alias="from"), end: date = Query(alias="to"), bu
     return {"rows": _clean(rows)}
 
 
+# ---------------------------------------------------------------- interconnector flow reversals
+
+# From 20 May 2026 NESO may trade at most 1,500 MW per hour within day against the day-ahead direction across the continental
+# links, and at most 300 MW on any one of them (NESO market notice "Interconnector trading restrictions for NESO", 14 May 2026;
+# a short-term measure until the end of 2026). Trading with the day-ahead direction is not limited.
+#
+# Elexon does not publish the day-ahead schedule, so it is estimated as the flow NESO's trades did not cause: the metered flow
+# minus NESO's net trades on the link (the interconnector units' notifications include NESO's trades: they match the metered
+# flow, not the flow without them). That estimate also contains the intraday market's trades. A link's direction counts only
+# when at least REV_MIN_MW flows that way, so hours near zero are never called a reversal or a breach. Only counterparty
+# trades count towards the limit: SO-SO trades are agreed with the neighbouring operator itself. Mirrored in Interconnectors.kt.
+REV_LINKS = ("IFA", "IFA2", "ELEC", "NEMO", "BRTN", "VKL")
+REV_FROM = "2026-05-20"
+REV_LINK_CAP, REV_TOTAL_CAP, REV_MIN_MW, REV_TOL = 300.0, 1500.0, 50.0, 1.0
+REV_SQL = """SELECT f.d AS d, f.h AS h, f.ic AS ic, f.flow AS flow, coalesce(t.neso, 0) AS neso, coalesce(t.cp, 0) AS cp
+    FROM (SELECT settlement_date AS d, sp + sp % 2 AS h, ic, avg(flow_mw) AS flow FROM ic_flow
+          WHERE settlement_date BETWEEN ? AND ? GROUP BY 1, 2, 3) f
+    LEFT JOIN (SELECT settlement_date AS d, sp + sp % 2 AS h, ic, sum(volume) AS neso,
+                      sum(CASE WHEN kind = 'trade' THEN volume ELSE 0 END) AS cp FROM ic_trade
+               WHERE settlement_date BETWEEN ? AND ? GROUP BY 1, 2, 3) t
+    ON t.d = f.d AND t.h = f.h AND t.ic = f.ic
+    ORDER BY 1, 2, 3"""
+
+
+def _rev_bucket(d: str, hour: int, bucket: str) -> str:
+    """Bucket label for clock hour `hour` (0-23; 24 on the autumn clock change) of settlement date `d`."""
+    if bucket == "hour":
+        return f"{d}T{min(hour, 23):02d}:00:00"
+    if bucket == "week":
+        x = date.fromisoformat(d)
+        return f"{(x - timedelta(days=x.weekday())).isoformat()}T00:00:00"
+    if bucket == "month":
+        return f"{d[:8]}01T00:00:00"
+    return f"{d}T00:00:00"
+
+
+@app.get("/api/ic/reversals")
+def ic_reversals(start: date = Query(alias="from"), end: date = Query(alias="to"), bucket: str = "day"):
+    """Hour by hour and link by link: the metered flow, NESO's net trades, the flow without them (the estimated
+    schedule), whether NESO reversed the flow, how much it traded against the schedule, and whether that broke the
+    300 MW per link or 1,500 MW in total limit. See the comment above REV_LINKS."""
+    if bucket not in ("hour", "day", "week", "month"):
+        bucket = "hour" if bucket == "sp" else "day"
+    raw = q(REV_SQL, [start, end, start, end])
+    hours: dict[tuple, dict] = {}
+    series: dict[tuple, dict] = {}
+    events, detail = [], []
+    keep_detail = (end - start).days <= 6
+    for r in raw:
+        d = r["d"].isoformat() if isinstance(r["d"], date) else str(r["d"])
+        hour = int(r["h"]) // 2 - 1
+        flow, neso, cp = float(r["flow"] or 0), float(r["neso"]), float(r["cp"])
+        pre = flow - neso
+        flipped = abs(pre) >= REV_MIN_MW and abs(flow) >= REV_MIN_MW and (pre > 0) != (flow > 0)
+        against = abs(cp) if abs(pre) >= REV_MIN_MW and cp * pre < 0 else 0.0
+        restricted = d >= REV_FROM and r["ic"] in REV_LINKS
+        over = restricted and against > REV_LINK_CAP + REV_TOL
+        row = {"d": d, "hour": hour, "ic": r["ic"], "flow": flow, "neso": neso, "cp": cp, "pre": pre,
+               "flipped": flipped, "against": against, "over": over}
+        if keep_detail:
+            detail.append(row)
+        if flipped or against:
+            events.append(row)
+        hk = (d, hour)
+        h = hours.setdefault(hk, {"d": d, "hour": hour, "against": 0.0, "n_over": 0, "flips": 0, "links": []})
+        if r["ic"] in REV_LINKS:
+            h["against"] += against
+        h["n_over"] += over
+        h["flips"] += flipped
+        if flipped or against:
+            h["links"].append(r["ic"])
+        sk = (_rev_bucket(d, hour, bucket), r["ic"])
+        s = series.setdefault(sk, {"t": sk[0], "ic": r["ic"], "flip_hours": 0, "against_mwh": 0.0, "over_hours": 0, "hours": 0})
+        s["flip_hours"] += flipped
+        s["against_mwh"] += against
+        s["over_hours"] += over
+        s["hours"] += 1
+    for h in hours.values():
+        h["total_over"] = h["d"] >= REV_FROM and h["against"] > REV_TOTAL_CAP + REV_TOL
+    hlist = [h for h in hours.values() if h["against"] or h["flips"] or h["n_over"]]
+    restricted_hours = [h for h in hours.values() if h["d"] >= REV_FROM]
+    summary = {
+        "hours": len(hours), "restricted_hours": len(restricted_hours),
+        "flip_hours": sum(1 for h in hours.values() if h["flips"]), "flip_link_hours": sum(1 for e in events if e["flipped"]),
+        "against_mwh": sum(e["against"] for e in events if e["ic"] in REV_LINKS),
+        "over_link_hours": sum(1 for e in events if e["over"]), "over_hours": sum(1 for h in hours.values() if h["n_over"]),
+        "total_over_hours": sum(1 for h in hours.values() if h["total_over"]),
+        "max_against": max((h["against"] for h in restricted_hours), default=0.0),
+        "max_link_against": max((e["against"] for e in events if e["d"] >= REV_FROM and e["ic"] in REV_LINKS), default=0.0),
+    }
+    events.sort(key=lambda e: (-e["over"], -e["against"], e["d"], e["hour"]))
+    return {"rules": {"from": REV_FROM, "link_cap": REV_LINK_CAP, "total_cap": REV_TOTAL_CAP, "min_mw": REV_MIN_MW, "links": list(REV_LINKS)},
+            "summary": summary, "series": sorted(series.values(), key=lambda s: (s["t"], s["ic"])), "hours": hlist,
+            "events": events[:1000], "n_events": len(events), "detail": detail}
+
+
 # ---------------------------------------------------------------- Demand Flexibility Service (see dfs.py)
 
 # dfs_hh: one row per event half-hour (requirement, procured, cost, settled, market price). dfs_bid: one row per bid (DFS
