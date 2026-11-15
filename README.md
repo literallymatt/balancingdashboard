@@ -247,9 +247,11 @@ SQLite (see "What is stored" below).
   than each acceptance's own profile (still available from the legend), and the Acceptances
   table shows one row per acceptance with its profile in words ("410 → 38 → 0 MW"; tick
   *Show each point* for Elexon's rows).
-- **Data sources**: every tab ends with a *Data sources* line naming where its figures come from; click it for the
-  full explanation (the datasets, with links to Elexon's and NESO's pages, how the figures are derived, caveats and
-  how to update them). The text lives in `SOURCES` in `static/app.js`.
+- **About this data**: every tab ends with one *About this data* line listing its sources, with the tab's status
+  (what is held, when it was refreshed) and Refresh button under it. Click it for the full explanation: what the data
+  is and how the tab adds it up, the datasets (with links to Elexon's and NESO's pages), further detail and how to
+  update. The tab-specific text is set by each view with `aboutData()`; the source lists live in `SOURCES` in
+  `static/app.js`.
 - **Click-throughs**: the Back button and breadcrumb trail name the page as well as the range
   ("Overview · 9 Nov – 15 Nov 2026 › Unit T_RYHPS-1 › detail for Thu 12 Nov 2026"). A click
   that changes a card further down the page (a unit's day, a boundary, a DFS event's bids)
