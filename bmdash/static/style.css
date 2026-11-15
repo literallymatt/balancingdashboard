@@ -216,3 +216,10 @@ button.btn.small { padding: 3px 10px; font-size: 12px; }
 .card.flash { animation: card-flash 1.5s ease-out; }
 @keyframes card-flash { 0%, 30% { box-shadow: 0 0 0 3px var(--s1); } 100% { box-shadow: 0 0 0 3px transparent; } }
 @media (prefers-reduced-motion: reduce) { .card.flash { animation: none; box-shadow: 0 0 0 3px var(--s1); } }
+/* VLPs tab: the collapsible introduction */
+.vlp-intro { margin-bottom: 14px; }
+.vlp-intro summary { cursor: pointer; list-style-position: inside; }
+.vlp-intro .vlp-body { margin-top: 8px; font-size: 14px; line-height: 1.5; color: var(--ink2); }
+.vlp-intro .vlp-body h3 { font-size: 14px; margin: 10px 0 4px; color: var(--ink); }
+.vlp-intro .vlp-body ul { margin: 0; padding-left: 20px; }
+.vlp-intro .vlp-body li { margin: 3px 0; }
