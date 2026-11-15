@@ -82,6 +82,12 @@ main { padding: 16px 20px 20px; max-width: 1700px; margin: 0 auto; }
 .sources-body ul { margin: 0; padding-left: 18px; }
 .sources-body li + li { margin-top: 3px; }
 .sources-body p { margin: 0; }
+.sources-body > .sources-about h3 { margin-top: 4px; }
+.sources-about-text { color: var(--ink2); }
+.sources-about-text a { color: var(--s1); }
+.sources-status:empty { display: none; }
+.sources-status { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-top: 8px; padding-left: 16px; }
+.sources-status .btn.small { padding: 3px 10px; font-size: 12px; }
 .sources-body a { color: var(--s1); }
 .sources-body code { font-size: 11px; background: var(--wash); padding: 0 4px; border-radius: 4px; }
 .grid { display: grid; gap: 14px; }

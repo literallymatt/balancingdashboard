@@ -707,7 +707,7 @@ const GLOSS = {
   dbgpower: ['Power draw', 'Estimated power the whole phone is drawing from the battery right now (current × voltage). The screen and mobile radio are included, not just this app.'],
   dbgnet: ['Downloaded', 'Data this app has downloaded since the debug sampler started. Mobile radio activity is a big part of heat, so a large number here matters.'],
   replay: ['Replaying the instructions', 'NESO can send a unit a new instruction while an earlier one is still running or waiting to start. The newest instruction takes over for the times it covers, and when an instruction ends the unit goes back to its own plan (PN). This replays the day\'s acceptances in the order they were issued so you can watch the instructed output change. Played back this way, they reproduce the energy Elexon settles for the unit.'],
-  costs: ['Total balancing costs', 'What it costs NESO each month to keep the grid balanced and secure, as system-level totals: there is no unit or asset behind these figures, so they sit apart from the unit-based tabs. See the notes below the chart for what is and is not included.'],
+  costs: ['Total balancing costs', 'What it costs NESO each month to keep the grid balanced and secure, as system-level totals: there is no unit or asset behind these figures, so they sit apart from the unit-based tabs. See About this data at the bottom of the tab for what is and is not included.'],
   costview: ['By source / By purpose', '"By source" shows where the money was spent (the Balancing Mechanism, non-BM actions, response and reserve availability). "By purpose" uses NESO\'s own tag for what each action was for, such as constraints or reserve. The two views cover different things, so their totals differ.'],
   bmderived: ['Balancing Mechanism (derived)', 'NESO\'s daily balancing cost total minus the non-BM actions (BSAD). NESO\'s total covers BM actions plus non-BM actions, and this difference matches the unit-level BM cashflows in the other tabs to within about 1% on the days we hold.'],
   bsadsrc: ['Non-BM actions (BSAD)', 'Trades and system actions NESO takes outside the Balancing Mechanism and reports to Elexon as Balancing Services Adjustment Data. Split here into energy trades and system actions.'],
@@ -1201,17 +1201,12 @@ async function viewCosts(main) {
     </div>
     <div class="chart tall" id="costChart"></div>
     <div id="costTable"></div>
-  </div>
-  <div class="card" style="margin-top:14px">
-    <h2>What is and is not included</h2>
-    <div class="small muted" style="line-height:1.55;margin-top:6px">
-      <b style="color:var(--ink)">By source</b> adds the Balancing Mechanism (NESO's daily total minus non-BM actions), non-BM actions (Elexon BSAD) and response and reserve availability (EAC auctions).<br>
-      <b style="color:var(--ink)">By purpose</b> is NESO's own split of the same daily total by what each action was for.<br>
-      <b style="color:var(--ink)">Not included:</b> other ancillary services (reactive power, black start, stability and voltage contracts, reserve delivery), SO-SO trades with other system operators, and reconciliation adjustments. I could not find a public monthly figure for these, so NESO's own all-in monthly totals will be higher than these bars.<br>
-      <b style="color:var(--ink)">Lag:</b> NESO publishes the daily cost data a few days late, so the latest month is usually partial (shown faded).
-    </div>
-    <div class="small muted" id="costMeta" style="margin-top:8px"></div>
   </div>`;
+  aboutData(`
+    <b style="color:var(--ink)">By source</b> adds the Balancing Mechanism (NESO's daily total minus non-BM actions), non-BM actions (Elexon BSAD) and response and reserve availability (EAC auctions).<br>
+    <b style="color:var(--ink)">By purpose</b> is NESO's own split of the same daily total by what each action was for.<br>
+    <b style="color:var(--ink)">Not included:</b> other ancillary services (reactive power, black start, stability and voltage contracts, reserve delivery), SO-SO trades with other system operators, and reconciliation adjustments. I could not find a public monthly figure for these, so NESO's own all-in monthly totals will be higher than these bars.<br>
+    <b style="color:var(--ink)">Lag:</b> NESO publishes the daily cost data a few days late, so the latest month is usually partial (shown faded).`, { title: 'What is and is not included', meta: 'costMeta' });
   $('#costView').onchange = (e) => { costView = e.target.value; drawCosts(); };
   $('#costRange').onchange = (e) => { costRange = e.target.value; drawCosts(); };
   $('#costRefresh').onclick = async () => {
@@ -1402,17 +1397,11 @@ async function viewConstraints(main) {
         <button class="btn" id="ccToggle">Table</button></div></div>
     <div class="chart" id="conCosts"></div>
     <div id="conCostsTable" hidden></div>
-  </div>
-  <div class="card" style="margin-top:14px">
-    <h2>About this data</h2>
-    <div class="small muted" style="line-height:1.55;margin-top:6px">
-      <b style="color:var(--ink)">Boundaries</b> are NESO's day-ahead constraint flows and limits: for each transmission boundary and half-hour, the most power the boundary can safely carry (limit) and the flow NESO forecast across it the day before. A forecast at or over the limit means NESO expected to have to act, typically turning generation down on the exporting side (often Scottish wind) and up on the other. These are forecasts, not metered flows, and NESO renames boundaries as the network changes (for example SSE_SP became SSE_SP2), so a boundary may only cover part of the range. Map positions are schematic, drawn from NESO's network diagrams.<br>
-      <b style="color:var(--ink)">Costs</b> are NESO's daily outturn: thermal constraint cost for its main boundary groups, and total constraint cost split by reason. They are only published per day, a few days late.<br>
-      <b style="color:var(--ink)">What actually happened</b>: the BM actions NESO took for constraints carry the SO flag. <a href="#" id="soLink" title="Opens the Overview filtered to SO-flagged actions, by technology and unit">See the SO-flagged BM actions by technology and unit</a> in the Overview (most are transmission-connected, so GSP group says little) (unit data held: ${esc(META.min || 'none')} to ${esc(META.max || '')}).
-    </div>
-    <div class="small muted" id="conMeta" style="margin-top:8px"></div>
-    <button type="button" class="btn" id="conRefresh" style="margin-top:8px">Refresh data</button>
   </div>`;
+  aboutData(`
+    <b style="color:var(--ink)">Boundaries</b> are NESO's day-ahead constraint flows and limits: for each transmission boundary and half-hour, the most power the boundary can safely carry (limit) and the flow NESO forecast across it the day before. A forecast at or over the limit means NESO expected to have to act, typically turning generation down on the exporting side (often Scottish wind) and up on the other. These are forecasts, not metered flows, and NESO renames boundaries as the network changes (for example SSE_SP became SSE_SP2), so a boundary may only cover part of the range. Map positions are schematic, drawn from NESO's network diagrams.<br>
+    <b style="color:var(--ink)">Costs</b> are NESO's daily outturn: thermal constraint cost for its main boundary groups, and total constraint cost split by reason. They are only published per day, a few days late.<br>
+    <b style="color:var(--ink)">What actually happened</b>: the BM actions NESO took for constraints carry the SO flag. <a href="#" id="soLink" title="Opens the Overview filtered to SO-flagged actions, by technology and unit">See the SO-flagged BM actions by technology and unit</a> in the Overview (most are transmission-connected, so GSP group says little) (unit data held: ${esc(META.min || 'none')} to ${esc(META.max || '')}).`, { title: 'What the data is', meta: 'conMeta', refresh: 'conRefresh' });
   $('#cmetric').onchange = (e) => update({ cmetric: e.target.value }, true);
   $('#cview').onchange = (e) => update({ cview: e.target.value }, true);
   $('#ccToggle').onclick = () => { const t = $('#conCostsTable'); t.hidden = !t.hidden; $('#conCosts').hidden = !t.hidden; $('#ccToggle').textContent = t.hidden ? 'Table' : 'Chart'; if (t.hidden) charts.get($('#conCosts'))?.resize(); };
@@ -1735,18 +1724,12 @@ async function viewRemit(main) {
     <div class="card-head"><div><h2>Unavailable capacity over time${tip('unavail')}</h2><div class="sub">Average MW unavailable in each period. Click a bar to show that period on the map.</div></div>
       <div class="controls"><label class="small muted">Split by ${select('rsplit', RSPLITS, split)}</label></div></div>
     <div class="chart tall" id="rTime"></div>
-  </div>
-  <div class="card" style="margin-top:14px">
-    <h2>About this data</h2>
-    <div class="small muted" style="line-height:1.55;margin-top:6px">
-      <b style="color:var(--ink)">REMIT messages</b> are published by the owners of generators (and large demand sites) whenever a unit's available capacity changes by 100 MW or more, planned or not, under the EU REMIT regulation as kept in GB law. Each gives the unit, its normal capacity, what is still available and when; many add a profile of the available capacity through the event. Messages are revised as an outage develops: only each message's latest revision counts, and messages the participant withdrew ("dismissed") are left out. Source: Elexon Insights (BMRS) REMIT data.<br>
-      <b style="color:var(--ink)">Closures</b>: stations that have closed or been mothballed often stay in REMIT as open-ended outages running for decades (Ratcliffe, Fiddler's Ferry and Dungeness B, for example, run to 2050). Events longer than a year are left out unless you tick <i>Closures</i>, so the map shows outages rather than retired plant.<br>
-      <b style="color:var(--ink)">Adding up</b>: a unit's unavailable capacity is its normal capacity minus what the message says is available, averaged over each half-hour. If two live messages cover the same unit at the same time (a planned outage and an unplanned extension, say) the larger counts, not both.${tip('remitadd')}<br>
-      <b style="color:var(--ink)">GSP groups</b> are the 14 regions of the distribution networks. Elexon gives embedded units a GSP group directly; transmission-connected units, which carry most of the capacity, are placed by their transmission loss factor, which Elexon sets per GSP-group zone; that places virtually all the capacity outside closures.${tip('remitplace')} Region outlines: NESO, GB DNO licence areas (NESO Open Data Licence), simplified.
-    </div>
-    <div class="small muted" id="rMeta" style="margin-top:8px"></div>
-    <button type="button" class="btn" id="conRefresh" style="margin-top:8px">Refresh data</button>
   </div>`;
+  aboutData(`
+    <b style="color:var(--ink)">REMIT messages</b> are published by the owners of generators (and large demand sites) whenever a unit's available capacity changes by 100 MW or more, planned or not, under the EU REMIT regulation as kept in GB law. Each gives the unit, its normal capacity, what is still available and when; many add a profile of the available capacity through the event. Messages are revised as an outage develops: only each message's latest revision counts, and messages the participant withdrew ("dismissed") are left out. Source: Elexon Insights (BMRS) REMIT data.<br>
+    <b style="color:var(--ink)">Closures</b>: stations that have closed or been mothballed often stay in REMIT as open-ended outages running for decades (Ratcliffe, Fiddler's Ferry and Dungeness B, for example, run to 2050). Events longer than a year are left out unless you tick <i>Closures</i>, so the map shows outages rather than retired plant.<br>
+    <b style="color:var(--ink)">Adding up</b>: a unit's unavailable capacity is its normal capacity minus what the message says is available, averaged over each half-hour. If two live messages cover the same unit at the same time (a planned outage and an unplanned extension, say) the larger counts, not both.${tip('remitadd')}<br>
+    <b style="color:var(--ink)">GSP groups</b> are the 14 regions of the distribution networks. Elexon gives embedded units a GSP group directly; transmission-connected units, which carry most of the capacity, are placed by their transmission loss factor, which Elexon sets per GSP-group zone; that places virtually all the capacity outside closures.${tip('remitplace')} Region outlines: NESO, GB DNO licence areas (NESO Open Data Licence), simplified.`, { title: 'What the data is', meta: 'rMeta', refresh: 'conRefresh' });
   const upd = RMETA.updated_at ? new Date(RMETA.updated_at * 1000).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : null;
   $('#rMeta').textContent = `${nf(0).format(RMETA.n)} messages held, for events from ${RMETA.min} to ${RMETA.max} (planned outages are published ahead)${upd ? ` · refreshed ${upd}` : ''}${RMETA.error ? ` · some sources failed: ${RMETA.error}` : ''}`;
   wireConRefresh(loadRMeta);
@@ -2124,17 +2107,11 @@ async function viewInterconnectors(main) {
       <div class="card-head"><div><h2>Physical flow${tip('icflow')}</h2><div class="sub" id="icFlowNote"></div></div></div>
       <div class="chart tall" id="icFlow"></div>
     </div>
-  </div>
-  <div class="card" style="margin-top:14px">
-    <h2>About this data</h2>
-    <div class="small muted" style="line-height:1.55;margin-top:6px">
-      <b style="color:var(--ink)">Trades</b>: interconnectors do not take part in the Balancing Mechanism, so NESO balances across them with trades outside it, which Elexon publishes as Balancing Services Adjustment Data (BSAD). <i>Counterparty trades</i> buy or sell energy from a trader for delivery over one link (the trader's interconnector unit, such as IFG-DSKC1 for Danske Commodities on IFA, names the link). <i>SO-SO trades</i> are with the neighbouring system operator (RTE, Statnett, EirGrid, SONI) and are often published without a cost, so they count towards volumes but not prices. <i>SO-flagged</i> trades were for a system reason (for example a constraint) rather than the national energy balance.<br>
-      <b style="color:var(--ink)">Prices</b>: each trade has its own price (pay as bid). The volume-weighted average is cost ÷ volume; highest and lowest are single trades; the clearing price is the marginal trade in each half-hour (the dearest NESO bought, or the cheapest it sold), averaged over the half-hours with trades.${tip('icclear')}<br>
-      <b style="color:var(--ink)">Flows</b> are Elexon's half-hourly outturn per interconnector (generation by fuel type), positive into GB. Landing points on the map are approximate and the lines schematic (outline: Natural Earth, public domain).
-    </div>
-    <div class="small muted" id="icMeta" style="margin-top:8px"></div>
-    <button type="button" class="btn" id="conRefresh" style="margin-top:8px">Refresh data</button>
   </div>`;
+  aboutData(`
+    <b style="color:var(--ink)">Trades</b>: interconnectors do not take part in the Balancing Mechanism, so NESO balances across them with trades outside it, which Elexon publishes as Balancing Services Adjustment Data (BSAD). <i>Counterparty trades</i> buy or sell energy from a trader for delivery over one link (the trader's interconnector unit, such as IFG-DSKC1 for Danske Commodities on IFA, names the link). <i>SO-SO trades</i> are with the neighbouring system operator (RTE, Statnett, EirGrid, SONI) and are often published without a cost, so they count towards volumes but not prices. <i>SO-flagged</i> trades were for a system reason (for example a constraint) rather than the national energy balance.<br>
+    <b style="color:var(--ink)">Prices</b>: each trade has its own price (pay as bid). The volume-weighted average is cost ÷ volume; highest and lowest are single trades; the clearing price is the marginal trade in each half-hour (the dearest NESO bought, or the cheapest it sold), averaged over the half-hours with trades.${tip('icclear')}<br>
+    <b style="color:var(--ink)">Flows</b> are Elexon's half-hourly outturn per interconnector (generation by fuel type), positive into GB. Landing points on the map are approximate and the lines schematic (outline: Natural Earth, public domain).`, { title: 'What the data is', meta: 'icMeta', refresh: 'conRefresh' });
   for (const k of ['imetric', 'isplit', 'ibd', 'imap', 'ipdir', 'iheat']) $('#' + k).onchange = (e) => update({ [k]: e.target.value }, true);
   $('#ipdir2').onchange = (e) => update({ ipdir: e.target.value }, true);
   $('#icClear')?.addEventListener('click', () => update({ ic: null, icp: null }));
@@ -2756,15 +2733,11 @@ async function viewReversals(main) {
     <div class="card-head"><div><h2>The hours</h2><div class="sub" id="rvTableNote"></div></div>
       <div class="controls"><label class="small muted">Show ${select('rvt', RVT, only)}</label></div></div>
     <div id="rvTable"></div>
-  </div>
-  <div class="card" style="margin-top:14px">
-    <h2>How this is worked out</h2>
-    <div class="small muted" style="line-height:1.55;margin-top:6px">
-      <b style="color:var(--ink)">The rule</b>: NESO market notice <i>Interconnector trading restrictions for NESO</i> (14 May 2026, NESO Data Portal): from 20 May 2026, within-day trading in the opposite direction to the day-ahead schedule is limited to 1,500 MW per hour across IFA, IFA2, ElecLink, Viking Link, BritNed and Nemo Link, with at most 300 MW on any one of them, as a short-term measure until the end of 2026. North Sea Link and the Irish links are not covered, so they show reversals but never breaches.<br>
-      <b style="color:var(--ink)">Each hour, each link</b>: the metered flow (Elexon FUELHH, averaged over the hour's two half-hours) minus NESO's net trades on the link (Elexon BSAD, MWh over the hour = average MW) gives the flow without NESO, the estimated schedule. NESO <i>reversed</i> the flow when the two point opposite ways and both are at least 50 MW. A counterparty trade is <i>against the schedule</i> when it points the other way to the estimated schedule; SO-SO trades are agreed with the neighbouring operator, so they are not counted. A link is <i>over the limit</i> when its trades against the schedule exceed 300 MW (1 MW is allowed for rounding); an hour is over the total limit when they exceed 1,500 MW across the six links.<br>
-      <b style="color:var(--ink)">Limits of the estimate</b>: the flow without NESO also contains the intraday market's own trades, so it is not exactly the day-ahead schedule; hours where it is under 50 MW either way are never counted. The hourly volumes match NESO's published interconnector auction results, and NESO's trades stop at exactly 300 MW on the links this method marks as running against the schedule, which supports it.
-    </div>
   </div>`;
+  aboutData(`
+    <b style="color:var(--ink)">The rule</b>: NESO market notice <i>Interconnector trading restrictions for NESO</i> (14 May 2026, NESO Data Portal): from 20 May 2026, within-day trading in the opposite direction to the day-ahead schedule is limited to 1,500 MW per hour across IFA, IFA2, ElecLink, Viking Link, BritNed and Nemo Link, with at most 300 MW on any one of them, as a short-term measure until the end of 2026. North Sea Link and the Irish links are not covered, so they show reversals but never breaches.<br>
+    <b style="color:var(--ink)">Each hour, each link</b>: the metered flow (Elexon FUELHH, averaged over the hour's two half-hours) minus NESO's net trades on the link (Elexon BSAD, MWh over the hour = average MW) gives the flow without NESO, the estimated schedule. NESO <i>reversed</i> the flow when the two point opposite ways and both are at least 50 MW. A counterparty trade is <i>against the schedule</i> when it points the other way to the estimated schedule; SO-SO trades are agreed with the neighbouring operator, so they are not counted. A link is <i>over the limit</i> when its trades against the schedule exceed 300 MW (1 MW is allowed for rounding); an hour is over the total limit when they exceed 1,500 MW across the six links.<br>
+    <b style="color:var(--ink)">Limits of the estimate</b>: the flow without NESO also contains the intraday market's own trades, so it is not exactly the day-ahead schedule; hours where it is under 50 MW either way are never counted. The hourly volumes match NESO's published interconnector auction results, and NESO's trades stop at exactly 300 MW on the links this method marks as running against the schedule, which supports it.`, { title: 'How this is worked out' });
   for (const k of ['rvm', 'rvt']) $('#' + k).onchange = (e) => update({ [k]: e.target.value }, true);
   const data = await api('ic/reversals', { from: state.from, to: state.to, bucket });
   const rules = data.rules, s = data.summary;
@@ -3081,18 +3054,12 @@ async function viewDfs(main) {
   <div class="card" style="margin-top:14px">
     <div class="card-head"><div><h2>When events ran</h2><div class="sub">Volume procured per half-hour, day × settlement period. Click a day to zoom to it.</div></div></div>
     <div class="chart tall" id="dHeat"></div>
-  </div>
-  <div class="card" style="margin-top:14px">
-    <h2>About this data</h2>
-    <div class="small muted" style="line-height:1.55;margin-top:6px">
-      <b style="color:var(--ink)">The service</b>: in a Demand Flexibility Service event NESO asks households and businesses, through registered providers (energy suppliers and aggregators), to shift their demand for set half-hours. <i>Turn-down</i> (Downwards) events ask them to use less at busy times; <i>turn-up</i> (Upwards) events, offered from April 2026, ask them to use more, for example when wind would otherwise be curtailed. NESO tags each event <i>Energy</i> (the national balance) or <i>System</i> (for example a network constraint). Providers bid a volume per DFS unit and half-hour at a price, and NESO accepts bids, cheapest first, up to its requirement.<br>
-      <b style="color:var(--ink)">Prices</b>: accepted bids are paid their own price (pay-as-bid), and NESO takes bids in price order: in no half-hour was a rejected bid cheaper than the dearest accepted one. So the <i>clearing price</i> of a half-hour is its highest accepted bid, and the cheapest rejected bid marks where NESO stopped. Over several half-hours the clearing price is averaged weighted by the volume procured. The <i>market price</i> is Elexon's market index price (the APX half-hourly price) for the same half-hours. NESO also states a guaranteed acceptance price per event (bids at or below it are always taken); it is £0 for almost every event.<br>
-      <b style="color:var(--ink)">Zones</b>: from April 2026 each DFS unit sits in one of 12 zones, and for each event half-hour NESO sets a cap per zone; a cap of 0 closes the zone to that event (often to avoid adding to a network constraint). Map: NESO's DFS 12-zone map (February 2026), simplified. NESO numbers the zones only; the area names are approximate.<br>
-      <b style="color:var(--ink)">Source</b>: NESO Data Portal, <i>Demand Flexibility Service</i>: the utilisation report summary (one row per event half-hour), the utilisation report (one row per bid) and the service requirement (guaranteed price and zone caps), for the current year and the 2025/26 archive (from November 2024); Elexon <i>MID</i> for market prices. Volumes are MW held for a half-hour, shown as MWh. Accepted bids add up exactly to NESO's procured volume and cost per half-hour. Settled (delivered) volumes appear weeks later. The 2025/26 archive has no event numbers, types, reasons or zones: there was one turn-down event a day, so its events are named by date with the reason "Not stated". Provider names are tidied (upper case, without "Limited"), because NESO spells some differently from file to file.
-    </div>
-    <div class="small muted" id="dMeta" style="margin-top:8px"></div>
-    <button type="button" class="btn" id="conRefresh" style="margin-top:8px">Refresh data</button>
   </div>`;
+  aboutData(`
+    <b style="color:var(--ink)">The service</b>: in a Demand Flexibility Service event NESO asks households and businesses, through registered providers (energy suppliers and aggregators), to shift their demand for set half-hours. <i>Turn-down</i> (Downwards) events ask them to use less at busy times; <i>turn-up</i> (Upwards) events, offered from April 2026, ask them to use more, for example when wind would otherwise be curtailed. NESO tags each event <i>Energy</i> (the national balance) or <i>System</i> (for example a network constraint). Providers bid a volume per DFS unit and half-hour at a price, and NESO accepts bids, cheapest first, up to its requirement.<br>
+    <b style="color:var(--ink)">Prices</b>: accepted bids are paid their own price (pay-as-bid), and NESO takes bids in price order: in no half-hour was a rejected bid cheaper than the dearest accepted one. So the <i>clearing price</i> of a half-hour is its highest accepted bid, and the cheapest rejected bid marks where NESO stopped. Over several half-hours the clearing price is averaged weighted by the volume procured. The <i>market price</i> is Elexon's market index price (the APX half-hourly price) for the same half-hours. NESO also states a guaranteed acceptance price per event (bids at or below it are always taken); it is £0 for almost every event.<br>
+    <b style="color:var(--ink)">Zones</b>: from April 2026 each DFS unit sits in one of 12 zones, and for each event half-hour NESO sets a cap per zone; a cap of 0 closes the zone to that event (often to avoid adding to a network constraint). Map: NESO's DFS 12-zone map (February 2026), simplified. NESO numbers the zones only; the area names are approximate.<br>
+    <b style="color:var(--ink)">Source</b>: NESO Data Portal, <i>Demand Flexibility Service</i>: the utilisation report summary (one row per event half-hour), the utilisation report (one row per bid) and the service requirement (guaranteed price and zone caps), for the current year and the 2025/26 archive (from November 2024); Elexon <i>MID</i> for market prices. Volumes are MW held for a half-hour, shown as MWh. Accepted bids add up exactly to NESO's procured volume and cost per half-hour. Settled (delivered) volumes appear weeks later. The 2025/26 archive has no event numbers, types, reasons or zones: there was one turn-down event a day, so its events are named by date with the reason "Not stated". Provider names are tidied (upper case, without "Limited"), because NESO spells some differently from file to file.`, { title: 'What the data is', meta: 'dMeta', refresh: 'conRefresh' });
   for (const k of ['dmetric', 'dsplit', 'dbd', 'ddir', 'dtag', 'dzm', 'dzev', 'dbin', 'dpx', 'dscp', 'ddl']) $('#' + k).onchange = (e) => update({ [k]: e.target.value || null }, true);
   $('#dtest').onchange = (e) => update({ dtest: e.target.checked ? '1' : null }, true);
   $('#dClear')?.addEventListener('click', () => update({ dp: null, dz: null, ddir: null, dtag: null }));
@@ -3820,12 +3787,11 @@ const SOURCES = {
       <li>${NESO_DP('eac-auction-results', 'NESO EAC auction results')}: response and reserve availability costs (read through the portal's SQL endpoint).</li>
       <li>${ELX('DISBSAD')}: non-BM balancing actions.</li>
     </ul>
-    <h3>How the figures are built</h3>
+    <h3>More detail</h3>
     <ul>
       <li>BM cost is NESO's daily total minus BSAD; on every complete day this matched Elexon's unit-level BM cashflows to within £0.4M (about 1%).</li>
       <li>EAC reserve products are half-hour windows and response products four-hour windows, so cost = price × MW × hours per product.</li>
-      <li>NESO publishes the daily file a few days late: a day counts once it has 44 or more settlement periods, and the latest month is marked partial.</li>
-      <li><b>Not included</b> (no public monthly actuals): other ancillary services (reactive, black start, stability, reserve delivery), SO-SO trades and reconciliation.</li>
+      <li>A day counts once NESO's file has 44 or more of its settlement periods.</li>
     </ul>${SHARED_REFRESH}`],
   constraints: ['NESO Data Portal: day-ahead constraint flows and limits, thermal constraint costs, constraint breakdown', `
     <h3>Sources</h3>
@@ -3835,11 +3801,8 @@ const SOURCES = {
       <li>${NESO_DP('constraint-breakdown', 'NESO Constraint Breakdown')}: daily costs by reason (thermal, voltage, inertia, largest loss).</li>
       <li>Map outline: Natural Earth (public domain).</li>
     </ul>
-    <h3>How the figures are built</h3>
+    <h3>More detail</h3>
     <ul>
-      <li>A half-hour counts as "at the limit" when the forecast flow is at or above the limit. These are day-ahead forecasts, not metered flows.</li>
-      <li>NESO renames boundaries as the network changes (SSE_SP became SSE_SP2), so codes are grouped into families for the map and costs. Boundary positions are schematic, drawn from NESO's network diagrams.</li>
-      <li>Costs are published per day only, so they show per day at finer granularities.</li>
       <li>Days NESO published twice are de-duplicated, except the repeated hour at the autumn clock change.</li>
     </ul>${SHARED_REFRESH}`],
   remit: ['Elexon BMRS: REMIT outage messages; NESO GB DNO licence areas (map)', `
@@ -3849,12 +3812,8 @@ const SOURCES = {
       <li>Elexon BM unit reference data: GSP group and transmission loss factor per unit.</li>
       <li>Region outlines: NESO's GB DNO licence areas (NESO Open Data Licence), simplified.</li>
     </ul>
-    <h3>How the figures are built</h3>
+    <h3>More detail</h3>
     <ul>
-      <li>Only each message's latest revision counts, and withdrawn ("Dismissed") messages are ignored.</li>
-      <li>Unavailable MW is the unit's normal capacity minus the outage profile's available capacity (or the message's own unavailable capacity when there is no profile), averaged over each half-hour; overlapping live messages for one unit count once (the larger).</li>
-      <li>Events longer than a year are hidden unless <i>Closures</i> is ticked: closed and mothballed stations stay in REMIT as open-ended outages.</li>
-      <li>Elexon gives a GSP group for embedded units only; transmission-connected units are placed by their transmission loss factor, which Elexon sets per GSP-group zone.</li>
       <li>Planned outages are published in advance, so the tab reaches 28 days ahead.</li>
     </ul>${SHARED_REFRESH}`],
   interconnectors: ['Elexon BMRS: DISBSAD interconnector trades, FUELHH physical flows', `
@@ -3864,24 +3823,16 @@ const SOURCES = {
       <li>${ELX('FUELHH')}: half-hourly physical flow per link (positive into GB).</li>
       <li>Map outline: Natural Earth (public domain); landing points are approximate.</li>
     </ul>
-    <h3>How the figures are built</h3>
+    <h3>More detail</h3>
     <ul>
-      <li>Positive volume is energy NESO bought (into GB). SO-SO trades are often published without a cost, so they count in volumes but not in average prices.</li>
-      <li>Trades are pay-as-bid. Average price is cost / volume; the clearing price is the marginal trade in each half-hour (the dearest NESO bought, the cheapest it sold), averaged over the half-hours with trades.</li>
+      <li>Positive volume is energy NESO bought (into GB).</li>
       <li>Trades are stored summed per settlement period, link, counterparty, kind, SO flag and direction, keeping each row's highest and lowest single-trade price.</li>
     </ul>${SHARED_REFRESH}`],
   icrev: ['Derived from the Interconnectors tab data (Elexon DISBSAD trades and FUELHH flows); NESO market notice of 14 May 2026', `
     <h3>Sources</h3>
     <ul>
       <li>${ELX('DISBSAD')} (NESO's interconnector trades) and ${ELX('FUELHH')} (metered flow), as stored for the Interconnectors tab; nothing extra is downloaded.</li>
-      <li>The limits come from NESO's market notice <i>Interconnector trading restrictions for NESO</i> (14 May 2026): from 20 May 2026 to the end of 2026, at most 1,500 MW per hour within day against the day-ahead schedule across IFA, IFA2, ElecLink, Viking Link, BritNed and Nemo Link, and at most 300 MW on any one of them.</li>
-    </ul>
-    <h3>How the figures are built</h3>
-    <ul>
-      <li>Elexon does not publish the day-ahead schedule, so it is estimated per link and clock hour as the metered flow minus NESO's net trades. The estimate also includes intraday market trades.</li>
-      <li>A link was <i>reversed</i> when the estimate and the metered flow point opposite ways, each by at least 50 MW. A counterparty trade is <i>against the schedule</i> when it points the other way to the estimate; SO-SO trades do not count towards the limit.</li>
-      <li>A link-hour is over the limit above 300 MW (1 MW allowed for rounding); an hour above 1,500 MW across the six links.</li>
-      <li>The hourly volumes match NESO's own interconnector auction results, but because the schedule is estimated, breaches are best read as likely rather than certain.</li>
+      <li>The limits: NESO market notice <i>Interconnector trading restrictions for NESO</i> (14 May 2026, NESO Data Portal).</li>
     </ul>${SHARED_REFRESH}`],
   dfs: ['NESO Data Portal: Demand Flexibility Service utilisation reports and service requirements; Elexon MID market prices', `
     <h3>Sources</h3>
@@ -3889,12 +3840,6 @@ const SOURCES = {
       <li>${NESO_DP('demand-flexibility', 'NESO Demand Flexibility Service')}: the <i>DFS Utilisation Report Summary</i> (per event half-hour: requirement, MW procured, accepted cost, settled volume and cost), the <i>DFS Utilisation Report</i> (every bid: provider, DFS unit, zone, MW, price, accepted or rejected) and the <i>DFS Service Requirement</i> (guaranteed acceptance price and zone caps), for the current year and the 2025/26 archive.</li>
       <li>${ELX('MID')}: Elexon's market index price (APX) for each event half-hour.</li>
       <li>Zone outlines: NESO's DFS 12-zone GeoJSON (February 2026), simplified; area names are approximate.</li>
-    </ul>
-    <h3>How the figures are built</h3>
-    <ul>
-      <li>Bids are paid their own price and accepted cheapest first, so a half-hour's clearing price is its highest accepted bid; over several half-hours it is averaged weighted by volume procured.</li>
-      <li>Accepted bids add up exactly to NESO's procured MW and cost for every half-hour checked (3,130 event half-hours).</li>
-      <li>The archive has no event numbers, types or tags, so its events are named by date with the reason "Not stated"; zones start in April 2026. Provider names are normalised because NESO spells some differently between files. Test events are left out unless ticked.</li>
     </ul>${SHARED_REFRESH}`],
   data: ['Elexon Insights Solution (BMRS) API', `
     <h3>Sources</h3>
@@ -3904,15 +3849,31 @@ const SOURCES = {
 };
 
 let sourcesFor = null;
+/** The foot of every tab: "About this data" with a one-line list of sources, a status line (what is held, Refresh), and
+ * on click the full explanation: the tab's own text (set by the view with aboutData), then the datasets and how to update. */
 function drawSources() {
   const el = $('#sources');
   if (!el) return;
   const v = state.view in SOURCES ? state.view : 'overview';
-  if (v === sourcesFor) return; // keep it open or closed while the same tab re-renders
-  sourcesFor = v;
-  const [summary, body] = SOURCES[v];
-  el.innerHTML = `<details class="sources-box"><summary><span class="sources-label">Data sources</span> <span class="sources-sum"></span> <span class="sources-more">How this data is sourced</span></summary><div class="sources-body">${body}</div></details>`;
-  el.querySelector('.sources-sum').textContent = summary;
+  if (v !== sourcesFor) { // keep it open or closed while the same tab re-renders
+    sourcesFor = v;
+    const [summary, body] = SOURCES[v];
+    el.innerHTML = `<details class="sources-box"><summary><span class="sources-label">About this data</span> <span class="sources-sum"></span> <span class="sources-more">Details</span></summary>
+      <div class="sources-body"><div class="sources-about"></div>${body}</div></details><div class="sources-status"></div>`;
+    el.querySelector('.sources-sum').textContent = `Sources: ${summary}`;
+  }
+  el.querySelector('.sources-about').innerHTML = '';
+  el.querySelector('.sources-status').innerHTML = '';
+}
+
+/** A view's own explanation of its data, shown first in the footer's expanded panel. `meta` is the id of a status
+ * line the view fills in (what is held, when refreshed) and `refresh` the id of a Refresh button; both stay visible. */
+function aboutData(html, { title = 'What the data is', meta = null, refresh = null } = {}) {
+  const el = $('#sources');
+  if (!el) return;
+  el.querySelector('.sources-about').innerHTML = `<h3>${esc(title)}</h3><div class="sources-about-text">${html}</div>`;
+  el.querySelector('.sources-status').innerHTML = (meta ? `<span class="small muted" id="${meta}"></span>` : '')
+    + (refresh ? `<button type="button" class="btn small" id="${refresh}">Refresh data</button>` : '');
 }
 
 let lastPage = null;
