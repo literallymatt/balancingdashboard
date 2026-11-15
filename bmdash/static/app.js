@@ -28,7 +28,7 @@ function readHash() {
   Object.assign(state, { bucket: 'auto', metric: 'net', split: unitView ? 'direction' : 'tech', bdim: unitView ? 'pair' : 'party', day: null,
     bnd: null, cmetric: 'bind', cview: 'boundary', rkind: 'production', rsplit: 'gsp', rt: null, rgsp: null, rlong: null, rmsg: null,
     ic: null, icp: null, imetric: 'net', isplit: 'ic', ibd: 'party', imap: 'volume', ipdir: 'buy', it: null, iheat: 'clear', rvd: null, rvic: null, rvm: 'over', rvt: 'over',
-    dmetric: 'proc', dsplit: 'none', dbd: 'party', dp: null, dev: null, ddir: null, dtag: null, dtest: null, dz: null, dzm: 'proc', dzev: null, dbin: null });
+    dmetric: 'proc', dsplit: 'none', dbd: 'party', dp: null, dev: null, ddir: null, dtag: null, dtest: null, dz: null, dzm: 'proc', dzev: null, dbin: null, dpx: 'clr', dscp: 'clr', ddl: 'clr' });
   const p = new URLSearchParams(qs || '');
   state.filters = {};
   for (const [k, v] of p) {
@@ -52,7 +52,7 @@ function stateHash() {
   if (state.view === 'remit') for (const k of ['rkind', 'rsplit', 'rt', 'rgsp', 'rlong', 'rmsg']) if (state[k]) p.set(k, state[k]);
   if (state.view === 'interconnectors') for (const k of ['ic', 'icp', 'imetric', 'isplit', 'ibd', 'imap', 'ipdir', 'it', 'iheat']) if (state[k]) p.set(k, state[k]);
   if (state.view === 'icrev') for (const k of ['rvd', 'rvic', 'rvm', 'rvt']) if (state[k]) p.set(k, state[k]);
-  if (state.view === 'dfs') for (const k of ['dmetric', 'dsplit', 'dbd', 'dp', 'dev', 'ddir', 'dtag', 'dtest', 'dz', 'dzm', 'dzev', 'dbin']) if (state[k]) p.set(k, state[k]);
+  if (state.view === 'dfs') for (const k of ['dmetric', 'dsplit', 'dbd', 'dp', 'dev', 'ddir', 'dtag', 'dtest', 'dz', 'dzm', 'dzev', 'dbin', 'dpx', 'dscp', 'ddl']) if (state[k]) p.set(k, state[k]);
   for (const [k, v] of Object.entries(state.filters)) if (v.length) p.set('f.' + k, v.join('|'));
   const path = state.view === 'unit' ? `unit/${encodeURIComponent(state.unit)}` : state.view;
   return `#/${path}?${p}`;
@@ -2971,6 +2971,22 @@ const zoneName = (z) => `Zone ${z}${DZONE[z] ? ` · ${DZONE[z]}` : ''}`;
 const DZMAP = { proc: 'Procured volume', cost: 'Accepted cost', price: 'Average accepted price', clear: 'Highest accepted price',
   accept: 'Share of offered volume accepted', closed: 'Share of event half-hours closed' };
 let DZ_MAP = null;
+// Which price to show, per time bucket or per event. Each half-hour's clearing price is its highest accepted bid; over
+// several half-hours they can be averaged (weighted by volume procured) or the extremes taken.
+const DPX = {
+  clr: { label: 'Clearing price (weighted average)', short: 'clearing', f: (r) => r.clr_avg,
+    note: 'the highest accepted bid in each half-hour, averaged weighted by volume procured' },
+  max: { label: 'Highest clearing price', short: 'highest clearing', f: (r) => r.clr_max,
+    note: 'the dearest half-hour\'s highest accepted bid' },
+  min: { label: 'Lowest clearing price', short: 'lowest clearing', f: (r) => r.clr_min,
+    note: 'the cheapest half-hour\'s highest accepted bid' },
+  paid: { label: 'Average accepted price', short: 'average paid', f: (r) => ratio(r.cost, r.proc_mwh),
+    note: 'accepted cost ÷ volume procured: what NESO paid on average, since each bid is paid its own price' },
+  rej: { label: 'Cheapest rejected bid', short: 'cheapest rejected', f: (r) => r.rej_min,
+    note: 'the cheapest bid NESO turned down, which marks where it stopped taking bids' },
+};
+const dpxKey = (k) => (DPX[state[k]] ? state[k] : 'clr');
+const dpxOpts = Object.entries(DPX).map(([k, v]) => [k, v.label]);
 
 async function viewDfs(main) {
   if (!DMETA.max) {
@@ -2996,8 +3012,9 @@ async function viewDfs(main) {
   <div class="grid kpis" id="dKpis"></div>
   <div class="card">
     <div class="card-head">
-      <div><h2>Clearing prices${tip('dfsclear')}</h2><div class="sub" id="dPxNote"></div></div>
-      <div class="controls"><button class="btn" id="dPxToggle">Table</button></div>
+      <div><h2>${esc(DPX[dpxKey('dpx')].label)} over time${tip('dfsclear')}</h2><div class="sub" id="dPxNote"></div></div>
+      <div class="controls"><label class="small muted">Price ${select('dpx', dpxOpts, dpxKey('dpx'))}</label>
+        <button class="btn" id="dPxToggle">Table</button></div>
     </div>
     <div class="chart tall" id="dPx"></div>
     <div id="dPxTable" hidden></div>
@@ -3006,11 +3023,13 @@ async function viewDfs(main) {
     <div class="card">
       <div class="card-head"><div><h2>Bid prices${tip('dfsdist')}</h2><div class="sub" id="dDistNote"></div></div>
         <div class="controls"><label class="small muted">Band ${select('dbin', [['5', '£5'], ['10', '£10'], ['25', '£25'], ['50', '£50']], String(state.dbin || '10'))}</label>
+          <label class="small muted">Line ${select('ddl', dpxOpts, dpxKey('ddl'))}</label>
           <label class="small muted">Direction <select id="dDistDir"></select></label></div></div>
       <div class="chart tall" id="dDist"></div>
     </div>
     <div class="card">
-      <div class="card-head"><div><h2>Clearing price against the market${tip('dfsmarket')}</h2><div class="sub" id="dScNote"></div></div></div>
+      <div class="card-head"><div><h2>${esc(DPX[dpxKey('dscp')].label)} against the market${tip('dfsmarket')}</h2><div class="sub" id="dScNote"></div></div>
+        <div class="controls"><label class="small muted">Price ${select('dscp', dpxOpts, dpxKey('dscp'))}</label></div></div>
       <div class="chart tall" id="dSc"></div>
     </div>
   </div>
@@ -3068,7 +3087,7 @@ async function viewDfs(main) {
     <div class="small muted" id="dMeta" style="margin-top:8px"></div>
     <button type="button" class="btn" id="conRefresh" style="margin-top:8px">Refresh data</button>
   </div>`;
-  for (const k of ['dmetric', 'dsplit', 'dbd', 'ddir', 'dtag', 'dzm', 'dzev', 'dbin']) $('#' + k).onchange = (e) => update({ [k]: e.target.value || null }, true);
+  for (const k of ['dmetric', 'dsplit', 'dbd', 'ddir', 'dtag', 'dzm', 'dzev', 'dbin', 'dpx', 'dscp', 'ddl']) $('#' + k).onchange = (e) => update({ [k]: e.target.value || null }, true);
   $('#dtest').onchange = (e) => update({ dtest: e.target.checked ? '1' : null }, true);
   $('#dClear')?.addEventListener('click', () => update({ dp: null, dz: null, ddir: null, dtag: null }));
   const toggle = (btn, ch, tb) => { $(btn).onclick = () => { const t = $(tb); t.hidden = !t.hidden; $(ch).hidden = !t.hidden; $(btn).textContent = t.hidden ? 'Table' : 'Chart'; if (t.hidden) charts.get($(ch))?.resize(); }; };
@@ -3200,9 +3219,10 @@ async function dStack(el, ev) {
   draw();
 }
 
-/** Clearing price per time bucket, by direction, against the market price for the same half-hours. Ignores a provider
- *  or zone pick: the clearing price is set by the whole stack. */
+/** The picked price (clearing price by default) per time bucket, by direction, against the market price for the same
+ *  half-hours. Ignores a provider or zone pick: the clearing price is set by the whole stack. */
 async function dPrices(el, tableEl, bucket) {
+  const px = DPX[dpxKey('dpx')];
   const data = await api('dfs/agg', dParams({ bucket, group: 'direction', top: 8 }));
   const cats = allBuckets(bucket, data.rows), idx = new Map(cats.map((t, i) => [t, i]));
   const dirs = ['Downwards', 'Upwards'].filter((d) => data.groups.includes(d));
@@ -3214,11 +3234,13 @@ async function dPrices(el, tableEl, bucket) {
     byDir[d] = arr;
     const col = dColour('direction', d), short = d === 'Upwards' ? 'Turn up' : 'Turn down';
     const sym = cats.length > 60 ? 3 : 6;
-    series.push({ name: `${short}: clearing price`, type: 'line', color: col, lineStyle: { width: 2 }, symbol: 'circle', symbolSize: sym, connectNulls: false, data: arr.map((r) => r?.clr_avg ?? null), _d: d, _k: 'clr' });
-    series.push({ name: `${short}: highest clearing`, type: 'scatter', color: col, symbol: 'triangle', symbolSize: sym + 2, itemStyle: { opacity: 0.55 }, data: arr.map((r) => (r && r.clr_max !== r.clr_avg ? r.clr_max : null)), _d: d, _k: 'max' });
+    series.push({ name: `${short}: ${px.short}`, type: 'line', color: col, lineStyle: { width: 2 }, symbol: 'circle', symbolSize: sym, connectNulls: false, data: arr.map((r) => (r ? px.f(r) ?? null : null)), _d: d, _k: 'clr' });
+    if (px === DPX.clr) series.push({ name: `${short}: highest clearing`, type: 'scatter', color: col, symbol: 'triangle', symbolSize: sym + 2, itemStyle: { opacity: 0.55 }, data: arr.map((r) => (r && r.clr_max !== r.clr_avg ? r.clr_max : null)), _d: d, _k: 'max' });
     series.push({ name: `${short}: market price`, type: 'line', color: col, lineStyle: { width: 1.5, type: 'dashed' }, symbol: 'none', connectNulls: false, data: arr.map((r) => (r && r.n_cleared ? r.mip_w : r?.mip_avg ?? null)), _d: d, _k: 'mip' });
   }
-  $('#dPxNote').textContent = 'Clearing price: the highest accepted bid in each half-hour, averaged over the bucket weighted by volume procured. Triangles: the highest clearing price in the bucket. Dashed: the market index price for the same half-hours. Accepted bids are paid their own price, so the average paid is lower than the clearing price.'
+  $('#dPxNote').textContent = `${px.label}: ${px.note}, in each ${bucket === 'tod' ? 'time of day' : 'period'}.`
+    + (px === DPX.clr ? ' Triangles: the highest clearing price in the bucket. Accepted bids are paid their own price, so the average paid is lower than the clearing price.' : '')
+    + ' Dashed: the market index price for the same half-hours.'
     + (state.dp || state.dz ? ' The provider or zone pick does not apply here: every bid sets the price.' : '');
   if (!dirs.length) { el.innerHTML = '<div class="empty">No events in this range.</div>'; charts.delete(el); return; }
   const o = baseOption();
@@ -3257,6 +3279,7 @@ async function dPrices(el, tableEl, bucket) {
 /** Bid volume by price band, accepted and rejected, for one direction, with the clearing and market prices marked. */
 async function dDist(el, events) {
   const binW = +(state.dbin || 10);
+  const px = DPX[dpxKey('ddl')];
   const data = await api('dfs/prices', dParams({ party: state.dp || '', zone: state.dz || '', bin: binW }));
   const dirs = ['Downwards', 'Upwards'].filter((d) => data.rows.some((r) => r.direction === d));
   const dsel = $('#dDistDir');
@@ -3268,8 +3291,9 @@ async function dDist(el, events) {
     if (!rows.length) { el.innerHTML = '<div class="empty">No bids in this range.</div>'; charts.delete(el); $('#dDistNote').textContent = ''; return; }
     // Fold the long tail (bids up to £10,000/MWh) into one last band so the body of the curve stays readable.
     const ev = events.filter((r) => r.direction === dir && r.clr_avg != null);
-    const w = ev.reduce((a, r) => a + n0(r.proc_mwh), 0);
-    const clr = w ? ev.reduce((a, r) => a + r.clr_avg * n0(r.proc_mwh), 0) / w : null;
+    const evp = ev.filter((r) => px.f(r) != null), w = evp.reduce((a, r) => a + n0(r.proc_mwh), 0);
+    const clr = w ? evp.reduce((a, r) => a + px.f(r) * n0(r.proc_mwh), 0) / w : null;
+    const pxName = px.short[0].toUpperCase() + px.short.slice(1);
     const tot = rows.reduce((a, r) => a + r.acc_mwh + r.rej_mwh, 0);
     let cum = 0, cut = rows[rows.length - 1].p;
     for (const r of rows) { cum += r.acc_mwh + r.rej_mwh; if (cum >= 0.99 * tot) { cut = r.p; break; } }
@@ -3284,7 +3308,7 @@ async function dDist(el, events) {
     const evm = ev.filter((r) => r.mip_w != null), wm = evm.reduce((a, r) => a + n0(r.proc_mwh), 0);
     const mkt = wm ? evm.reduce((a, r) => a + r.mip_w * n0(r.proc_mwh), 0) / wm : null;
     const label = (b) => `£${nf(0).format(b.p)}${b.tail ? '+' : ''}`;
-    $('#dDistNote').textContent = `Volume offered in each £${binW} price band${state.dp ? ` by ${state.dp}` : state.dz ? ` in zone ${state.dz}` : ''}, accepted and rejected. Lines: average clearing price${clr != null ? ` ${price(clr)}` : ''} and market price${mkt != null ? ` ${price(mkt)}` : ''} for these events, weighted by volume procured.`;
+    $('#dDistNote').textContent = `Volume offered in each £${binW} price band${state.dp ? ` by ${state.dp}` : state.dz ? ` in zone ${state.dz}` : ''}, accepted and rejected. Lines: ${px === DPX.clr ? 'average clearing price' : `${px.label.toLowerCase()} (averaged over events)`}${clr != null ? ` ${price(clr)}` : ''} and market price${mkt != null ? ` ${price(mkt)}` : ''} for these events, weighted by volume procured.`;
     const o = baseOption();
     o.tooltip = { ...o.tooltip, axisPointer: { type: 'shadow', shadowStyle: { color: css('--wash') } }, formatter: (ps) => {
       const b = bands[ps[0].dataIndex];
@@ -3293,7 +3317,7 @@ async function dDist(el, events) {
     o.xAxis = { ...o.xAxis, type: 'category', data: bands.map(label), axisLabel: { ...o.xAxis.axisLabel, hideOverlap: true } };
     o.yAxis = { ...o.yAxis, type: 'value', axisLabel: { ...o.yAxis.axisLabel, formatter: (v) => mwh(v).replace(' MWh', '') } };
     const at = (v) => (v == null ? null : Math.max(0, Math.min(bands.length - 1, Math.floor((v - bands[0].p) / binW))));
-    const ml = [clr != null && { xAxis: at(clr), name: 'Clearing', lineStyle: { color: css('--ink2'), type: 'solid' }, label: { formatter: `Clearing ${price(clr).replace('/MWh', '')}`, color: css('--ink2'), fontSize: 11 } },
+    const ml = [clr != null && { xAxis: at(clr), name: pxName, lineStyle: { color: css('--ink2'), type: 'solid' }, label: { formatter: `${pxName} ${price(clr).replace('/MWh', '')}`, color: css('--ink2'), fontSize: 11 } },
       mkt != null && { xAxis: at(mkt), name: 'Market', lineStyle: { color: css('--s2'), type: 'dashed' }, label: { formatter: `Market ${price(mkt).replace('/MWh', '')}`, color: css('--s2'), fontSize: 11, position: 'end', distance: 18 } }].filter(Boolean);
     o.grid.top = 64;
     const bar = { type: 'bar', stack: 'a', barCategoryGap: '10%', emphasis: { disabled: true } };
@@ -3305,31 +3329,33 @@ async function dDist(el, events) {
   draw();
 }
 
-/** One dot per event: its volume-weighted clearing price against the market price in its half-hours. */
+/** One dot per event: the picked price (volume-weighted clearing price by default) against the market price in its half-hours. */
 async function dScatter(el, events) {
-  const pts = events.filter((r) => r.clr_avg != null && r.mip_w != null);
-  const above = pts.filter((r) => r.clr_avg > r.mip_w).length;
-  $('#dScNote').textContent = pts.length ? `Each dot is an event: its clearing price (volume-weighted) against the market price in the same half-hours. Above the line NESO paid more than the market; ${above} of ${pts.length} events cleared above it. Dot size: volume procured. Click a dot to see its bids.` : '';
+  const px = DPX[dpxKey('dscp')];
+  const pts = events.filter((r) => r.clr_avg != null && r.mip_w != null && px.f(r) != null);
+  const above = pts.filter((r) => px.f(r) > r.mip_w).length;
+  $('#dScNote').textContent = pts.length ? `Each dot is an event: its ${px.label.toLowerCase()} (${px.note}) against the market price in the same half-hours. Above the line the price was above the market; ${above} of ${pts.length} events were. Dot size: volume procured. Click a dot to see its bids.` : '';
   if (!pts.length) { el.innerHTML = '<div class="empty">No events with accepted bids in this range.</div>'; charts.delete(el); return; }
-  const hi = Math.max(...pts.map((r) => Math.max(r.clr_avg, r.mip_w))), lo = Math.min(...pts.map((r) => Math.min(r.clr_avg, r.mip_w)));
+  const hi = Math.max(...pts.map((r) => Math.max(px.f(r), r.mip_w))), lo = Math.min(...pts.map((r) => Math.min(px.f(r), r.mip_w)));
   const maxV = Math.max(...pts.map((r) => n0(r.proc_mwh))) || 1;
   const o = baseOption();
   o.grid = { ...o.grid, bottom: 30, left: 12 };
   o.tooltip = { ...o.tooltip, trigger: 'item', formatter: (p) => {
     const r = p.data.r;
     return tipLines(`${evLabel(r.event)} · ${bucketLabel(r.date + 'T00:00:00', 'day')} ${evWindow(r)}`, [`${DIR_LABEL[r.direction] || r.direction}, ${r.tag || 'reason not stated'}`,
-      `Clearing ${price(r.clr_avg)} · market ${price(r.mip_w)}`, `Procured ${mwh(r.proc_mwh)} · paid ${price(ratio(r.cost, r.proc_mwh))} on average`]) + clickHint('Click to see this event\'s bids');
+      `Clearing ${price(r.clr_avg)}${r.clr_max !== r.clr_min ? ` (${pound(r.clr_min)} to ${pound(r.clr_max)})` : ''} · market ${price(r.mip_w)}`,
+      r.rej_min != null ? `Cheapest rejected ${price(r.rej_min)}` : 'No bid rejected', `Procured ${mwh(r.proc_mwh)} · paid ${price(ratio(r.cost, r.proc_mwh))} on average`]) + clickHint('Click to see this event\'s bids');
   } };
   const pad = (hi - lo) * 0.05 || 10;
   const ax = (name) => ({ type: 'value', min: Math.floor((lo - pad) / 10) * 10, max: Math.ceil((hi + pad) / 10) * 10, name, nameLocation: 'middle', nameGap: name.startsWith('Market') ? 24 : 44,
     nameTextStyle: { color: css('--muted'), fontSize: 11 }, axisLabel: { color: css('--muted'), fontSize: 11, formatter: (v) => `£${nf(0).format(v)}` }, splitLine: { lineStyle: { color: css('--grid') } }, axisLine: { show: false }, axisTick: { show: false } });
   o.xAxis = ax('Market price (£/MWh)');
-  o.yAxis = ax('Clearing price (£/MWh)');
+  o.yAxis = ax(`${px.label.replace(' (weighted average)', '')} (£/MWh)`);
   o.legend.show = true;
   const dirs = ['Downwards', 'Upwards'].filter((d) => pts.some((r) => r.direction === d));
   o.series = dirs.map((d, i) => ({ name: d === 'Upwards' ? 'Turn up' : 'Turn down', type: 'scatter', color: dColour('direction', d),
     symbolSize: (v, p) => 5 + 16 * Math.sqrt(n0(p.data.r.proc_mwh) / maxV), itemStyle: { opacity: 0.75 },
-    data: pts.filter((r) => r.direction === d).map((r) => ({ value: [r.mip_w, r.clr_avg], r })),
+    data: pts.filter((r) => r.direction === d).map((r) => ({ value: [r.mip_w, px.f(r)], r })),
     ...(i === 0 ? { markLine: { symbol: 'none', silent: true, lineStyle: { color: css('--axis'), type: 'dashed' }, label: { show: false },
       data: [[{ coord: [o.xAxis.min, o.xAxis.min] }, { coord: [o.xAxis.max, o.xAxis.max] }]] } } : {}) }));
   const c = chart(el);
