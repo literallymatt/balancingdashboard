@@ -1,6 +1,6 @@
-# bmdash: GB Balancing Mechanism dashboard
+# bmdash: GB Grid Operations dashboard
 
-Drill-down dashboard for Balancing Mechanism costs, built on the Elexon Insights (BMRS) API.
+Drill-down dashboard for how GB's electricity system is balanced and run: Balancing Mechanism and total balancing costs, network constraints, REMIT outages, interconnectors, Virtual Lead Parties and the Demand Flexibility Service. Built on the Elexon Insights (BMRS) API and the NESO Data Portal.
 
 ## Run
 

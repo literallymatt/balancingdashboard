@@ -1,7 +1,7 @@
 [project]
 name = "bmdash"
 version = "0.1.0"
-description = "Drill-down dashboard for GB Balancing Mechanism costs (Elexon BMRS)"
+description = "Drill-down dashboard for GB electricity system operation: balancing costs, constraints, outages, interconnectors, VLPs and DFS (Elexon BMRS, NESO)"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

@@ -42,7 +42,7 @@ class IngestService : Service() {
     private fun notification(text: String, done: Int, total: Int): Notification =
         Notification.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.stat_sys_download)
-            .setContentTitle("GB Balancing data")
+            .setContentTitle("GB Grid Operations data")
             .setContentText(text)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
