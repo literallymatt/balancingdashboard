@@ -3904,9 +3904,11 @@ async function render() {
   drawCoverage();
   drawSources();
   const page = state.view === 'unit' ? `unit/${state.unit}` : state.view;
-  if (page !== lastPage && lastPage != null && !pendingReveal) scrollTo(0, 0);  // a new page starts at its top
-  lastPage = page;
   const main = $('#main');
+  const samePage = page === lastPage;
+  if (!samePage && lastPage != null && !pendingReveal) scrollTo(0, 0);  // a new page starts at its top
+  if (samePage && !pendingReveal) holdPlace(main);
+  lastPage = page;
   try {
     if (state.view === 'units') await viewUnits(main);
     else if (state.view === 'unit') await viewUnit(main);
@@ -3921,6 +3923,57 @@ async function render() {
   } catch (e) { console.error(e); main.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
   pruneCharts();
   revealPending();
+}
+
+// ------------------------------------------------------------------ keep your place on redraw
+// Changing a dropdown (or the range) redraws the whole page, and its tiles, tables and notes fill in a moment later
+// at their own heights, which used to shove the page about. Instead, note where the control you used (or else the
+// first thing on screen) sits in the window, and keep it there while the page fills back in.
+let placeHold = null, lastChanged = null;
+addEventListener('change', (e) => { lastChanged = e.target; }, true);  // some browsers don't keep focus on a <select>
+function holdPlace(main) {
+  placeHold?.();
+  const stuck = Math.max($('.top')?.getBoundingClientRect().bottom || 0, $('#filterbar:not([hidden])')?.getBoundingClientRect().bottom || 0);
+  const a = lastChanged?.id && main.contains(lastChanged) ? lastChanged : document.activeElement;
+  lastChanged = null;
+  const focused = a && a.id && main.contains(a) ? a : null;
+  const el = focused || [...main.querySelectorAll('[id]')].find((e) => { const r = e.getBoundingClientRect(); return r.height && r.bottom > stuck; });
+  if (!el) return;
+  const id = el.id, top = el.getBoundingClientRect().top;
+  let refocus = !!focused, following = true;
+  main.style.minHeight = `${main.offsetHeight}px`;  // don't let the page collapse while it redraws
+  // Sections that come back empty while their data loads (the KPI tiles, tables) keep their old height until filled.
+  const heights = new Map([...main.querySelectorAll('[id]')].map((e) => [e.id, e.offsetHeight]));
+  const held = new Set();
+  let fresh = false;
+  const fix = () => {
+    const now = document.getElementById(id);
+    if (!now || !main.contains(now)) return;
+    if (!fresh && now !== el) {
+      fresh = true;
+      for (const e of main.querySelectorAll('[id]')) if (heights.get(e.id) && !e.childElementCount) { e.style.minHeight = `${heights.get(e.id)}px`; held.add(e); }
+    }
+    for (const e of held) if (e.childElementCount && !e.classList.contains('loading')) { e.style.minHeight = ''; held.delete(e); }
+    if (refocus && now !== el) { refocus = false; now.focus({ preventScroll: true }); }
+    const d = now.getBoundingClientRect().top - top;
+    if (following && Math.abs(d) > 1) scrollTo({ top: scrollY + d, behavior: 'instant' });
+  };
+  // Keep correcting, frame by frame, as content arrives and changes heights, until it settles or you scroll yourself.
+  let raf = 0;
+  const tick = () => { fix(); raf = requestAnimationFrame(tick); };
+  tick();
+  const userInput = ['wheel', 'touchstart', 'keydown', 'pointerdown'];
+  const onUser = () => { following = false; };
+  userInput.forEach((t) => addEventListener(t, onUser, { capture: true, passive: true }));
+  const timer = setTimeout(() => stop(), 4000);
+  function stop() {
+    cancelAnimationFrame(raf); clearTimeout(timer);
+    userInput.forEach((t) => removeEventListener(t, onUser, true));
+    main.style.minHeight = '';
+    held.forEach((e) => { e.style.minHeight = ''; });
+    if (placeHold === stop) placeHold = null;
+  }
+  placeHold = stop;
 }
 
 // Nav links keep the current range and filters.
