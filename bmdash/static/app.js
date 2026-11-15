@@ -16,7 +16,7 @@ const DIMS = Object.keys(DIM_LABEL);
 const state = { view: 'overview', unit: null, from: null, to: null, bucket: 'auto',
   metric: 'net', split: 'tech', bdim: 'party', filters: {}, day: null, bnd: null, cmetric: 'bind', cview: 'boundary', rkind: 'production', rsplit: 'gsp', rt: null, rgsp: null, rlong: null, rmsg: null,
   ic: null, icp: null, imetric: 'net', isplit: 'ic', ibd: 'party', imap: 'volume', ipdir: 'buy', it: null, iheat: 'clear', rvd: null, rvic: null, rvm: 'over', rvt: 'over',
-  dmetric: 'proc', dsplit: 'none', dbd: 'party', dp: null, dev: null, ddir: null, dtag: null, dtest: null, dz: null, dzm: 'proc', dzev: null, dbin: null };
+  dmetric: 'proc', dsplit: 'none', dbd: 'party', dp: null, dev: null, ddir: null, dtag: null, dtest: null, dz: null, dzm: 'proc', dzev: null, dbin: null, vmap: 'gross' };
 let META = { days: [] };
 
 function readHash() {
@@ -25,10 +25,11 @@ function readHash() {
   state.view = parts[0] || 'overview';
   state.unit = state.view === 'unit' ? decodeURIComponent(parts[1] || '') : null;
   const unitView = state.view === 'unit';
-  Object.assign(state, { bucket: 'auto', metric: 'net', split: unitView ? 'direction' : 'tech', bdim: unitView ? 'pair' : 'party', day: null,
+  const vlpView = state.view === 'vlp';
+  Object.assign(state, { bucket: 'auto', metric: vlpView ? 'volume' : 'net', split: unitView ? 'direction' : vlpView ? 'party' : 'tech', bdim: unitView ? 'pair' : 'party', day: null,
     bnd: null, cmetric: 'bind', cview: 'boundary', rkind: 'production', rsplit: 'gsp', rt: null, rgsp: null, rlong: null, rmsg: null,
     ic: null, icp: null, imetric: 'net', isplit: 'ic', ibd: 'party', imap: 'volume', ipdir: 'buy', it: null, iheat: 'clear', rvd: null, rvic: null, rvm: 'over', rvt: 'over',
-    dmetric: 'proc', dsplit: 'none', dbd: 'party', dp: null, dev: null, ddir: null, dtag: null, dtest: null, dz: null, dzm: 'proc', dzev: null, dbin: null, dpx: 'clr', dscp: 'clr', ddl: 'clr' });
+    dmetric: 'proc', dsplit: 'none', dbd: 'party', dp: null, dev: null, ddir: null, dtag: null, dtest: null, dz: null, dzm: 'proc', dzev: null, dbin: null, dpx: 'clr', dscp: 'clr', ddl: 'clr', vmap: 'gross' });
   const p = new URLSearchParams(qs || '');
   state.filters = {};
   for (const [k, v] of p) {
@@ -53,6 +54,7 @@ function stateHash() {
   if (state.view === 'interconnectors') for (const k of ['ic', 'icp', 'imetric', 'isplit', 'ibd', 'imap', 'ipdir', 'it', 'iheat']) if (state[k]) p.set(k, state[k]);
   if (state.view === 'icrev') for (const k of ['rvd', 'rvic', 'rvm', 'rvt']) if (state[k]) p.set(k, state[k]);
   if (state.view === 'dfs') for (const k of ['dmetric', 'dsplit', 'dbd', 'dp', 'dev', 'ddir', 'dtag', 'dtest', 'dz', 'dzm', 'dzev', 'dbin', 'dpx', 'dscp', 'ddl']) if (state[k]) p.set(k, state[k]);
+  if (state.view === 'vlp' && state.vmap) p.set('vmap', state.vmap);
   for (const [k, v] of Object.entries(state.filters)) if (v.length) p.set('f.' + k, v.join('|'));
   const path = state.view === 'unit' ? `unit/${encodeURIComponent(state.unit)}` : state.view;
   return `#/${path}?${p}`;
@@ -104,7 +106,7 @@ function noteRemitNames(rows) {
   for (const r of rows) if (r.mrid) remitNames[r.mrid] = `${r.name || r.asset}${r.start ? `, from ${+r.start.slice(8, 10)} ${MON[+r.start.slice(5, 7) - 1]}` : ''}`;
   try { sessionStorage.setItem('remitNames', JSON.stringify(remitNames)); } catch { /* storage off */ }
 }
-const VIEW_NAME = { overview: 'Overview', units: 'Units', constraints: 'Constraints', remit: 'REMIT', interconnectors: 'Interconnectors', icrev: 'IC reversals', dfs: 'DFS' };
+const VIEW_NAME = { overview: 'Overview', units: 'Units', constraints: 'Constraints', remit: 'REMIT', interconnectors: 'Interconnectors', icrev: 'IC reversals', dfs: 'DFS', vlp: 'VLPs' };
 
 /** What a click-through can change: the page, its range, filters and the selections that page has. */
 function drillKey() {
@@ -236,6 +238,7 @@ function queryParams(extra = {}) {
   const p = { from: state.from, to: state.to };
   for (const [k, v] of Object.entries(state.filters)) if (v.length) p[k] = v.join('|');
   if (state.view === 'unit') p.unit = state.unit;
+  if (state.view === 'vlp') p.unit_type = 'V';  // the VLPs tab is the BM data narrowed to secondary BM units
   return { ...p, ...extra };
 }
 
@@ -750,6 +753,13 @@ const GLOSS = {
   dfsclear: ['Clearing price', 'Accepted bids are paid their own price (pay-as-bid), and NESO takes bids cheapest first: in no half-hour was a rejected bid cheaper than the dearest accepted one. So the clearing price of a half-hour is its highest accepted bid, the price NESO had to go to for the last megawatt it took. Over several half-hours it is averaged weighted by volume procured. The cheapest rejected bid shows where NESO stopped.'],
   dfsmarket: ['Market price', 'Elexon\'s market index price for the same half-hour: the volume-weighted price of short-term trades on the APX power exchange, a guide to the wholesale price at the time. For turn-down events a clearing price above the market means NESO paid more to cut demand than the energy was trading for.'],
   dfsdist: ['Bid prices', 'All the volume providers offered, by price band: blue was accepted, grey rejected. Accepted volume sits at the cheap end and rejected volume above the clearing price, because NESO takes bids in price order. Bids above about three times the clearing price (some are at £10,000/MWh) are folded into the last band.'],
+  vlp: ['Virtual Lead Party (VLP)', 'A BSC party that offers balancing services from sites it does not supply, introduced by BSC modification P344 (2019). An aggregator, or a battery or demand-side operator, groups meters into secondary BM units, each within one GSP group, and offers them into the Balancing Mechanism without being those sites\' supplier. Their unit ids start V__ and Elexon gives them BM unit type V, which is how this tab separates them from every other unit.'],
+  vlpoffer: ['VLP offers', 'An accepted offer asks the unit for more export or less import. For a VLP unit made of customers\' demand that is a turn-down: the sites take less from the grid than planned, so their supplier has bought energy it will not bill. For a battery it means discharging more. The price compared is the volume-weighted average of the rest of the BM over the same range.'],
+  vlpbid: ['VLP bids', 'An accepted bid asks the unit for less export or more import: for customers\' demand a turn-up (the sites take more than planned), for a battery charging more or discharging less. Bid cashflow is usually negative, meaning the unit pays NESO. The price compared is the volume-weighted average of the rest of the BM.'],
+  vlpshare: ['VLP share of the BM', 'Accepted volume from the secondary (V__) BM units shown as a share of all accepted volume in the Balancing Mechanism over the same range, for offers and bids separately. A lead party, unit, region or technology filter narrows the VLP side only; direction and SO-flag filters apply to both.'],
+  vlptod: ['Time of day', 'Accepted VLP volume in each half-hour of the day, averaged over the days in the range (so a typical day), with the VLP share of all BM volume in that half-hour. Useful for setting VLP dispatch against your demand shape and hedges.'],
+  vlpgsp: ['By GSP group', 'A secondary BM unit may only hold sites in one GSP group, and the group letter is in its id (V__B... is East Midlands). Public data does not say which supplier\'s customers are inside a VLP\'s units, so the GSP group is the finest public guide to where a supplier\'s customers could be affected. Click a region or row to filter the whole tab to it.'],
+  vlptype: ['BM unit types', 'Elexon types every BM unit: T (transmission-connected), E (embedded in a distribution network), S (supplier BM units, ids 2__), V (VLP secondary BM units, V__), I (interconnectors). The chart compares their volume-weighted average accepted offer and bid prices; VLP units are drawn solid.'],
   amendment: ['Amendment', 'Whether the record is the original acceptance (ORI) or a later change to an earlier one, for example an update or deletion.'],
 };
 const tip = (k) => (GLOSS[k] ? `<button type="button" class="info" data-tip="${k}" aria-label="What does ${esc(GLOSS[k][0])} mean?" title="Click for what ${esc(GLOSS[k][0])} means">i</button>` : '');
@@ -806,7 +816,8 @@ async function kpis(el) {
 }
 
 const METRIC_OPTS = Object.entries(METRICS).map(([k, m]) => [k, m.label]);
-const splitOpts = () => [['none', 'No split'], ...DIMS.filter((d) => !(state.view === 'unit' && ['unit', 'tech', 'fuel', 'party', 'unit_type', 'gsp'].includes(d))).map((d) => [d, DIM_LABEL[d]])];
+const splitOpts = () => [['none', 'No split'], ...DIMS.filter((d) => !(state.view === 'unit' && ['unit', 'tech', 'fuel', 'party', 'unit_type', 'gsp'].includes(d))
+  && !(state.view === 'vlp' && ['unit_type', 'fuel'].includes(d))).map((d) => [d, DIM_LABEL[d]])];
 
 function explorerHtml() {
   const bd = splitOpts().slice(1);
@@ -3519,6 +3530,290 @@ async function dHeat(el) {
   c.on('click', (p) => { const d = days[p.value[0]]; drill({ from: d, to: d, bucket: 'auto', dev: null }); });
 }
 
+// ------------------------------------------------------------------ Virtual Lead Parties (secondary BM units)
+
+// Every chart here is the BM data narrowed to Elexon BMU type "V" (queryParams adds it on this tab), so the tab needs no
+// endpoints of its own and runs unchanged on the phone. "The rest of the BM" is the same query without the narrowing.
+const UTYPE = { T: 'Transmission (T_)', E: 'Embedded (E_)', S: 'Supplier (2__)', V: 'VLP secondary (V__)', G: 'Other (G)', I: 'Interconnector (I_)' };
+const VMAP = { gross: 'Accepted volume (offers + bids)', offer_vol: 'Offer volume (more export / less demand)', bid_vol: 'Bid volume (less export / more demand)',
+  net: 'Net cost', units: 'Units with actions' };
+// A secondary BM unit sits in one GSP group, and its id carries the group letter (V__B... is _B, East Midlands). Elexon's
+// group names are spelt several ways ("Eastern", "Eastern GSP Group"), so the id is the reliable key.
+const vGsp = (u) => (/^V__[A-P]/.test(u) && GSP_NAME['_' + u[3]] ? '_' + u[3] : 'Unknown');
+const grossVol = (r) => Math.abs(n0(r.offer_vol)) + Math.abs(n0(r.bid_vol));
+const vMinus = (a, b) => Object.fromEntries(['offer_vol', 'bid_vol', 'offer_cash', 'bid_cash'].map((k) => [k, n0(a[k]) - n0(b[k])]));
+const shareOf = (a, b) => (b ? Math.abs(n0(a)) / Math.abs(b) : null);
+// The whole BM to compare with: same range, and only the filters that mean the same for every unit type (a lead party,
+// unit or GSP group filter picks VLP units; transmission units have no GSP group).
+const restParams = (extra = {}) => {
+  const p = { ...queryParams(extra), unit_type: '' };  // api() drops empty values
+  for (const k of ['party', 'unit', 'gsp', 'tech']) if (!(k in extra)) delete p[k];
+  return p;
+};
+
+async function viewVlp(main) {
+  const vm = VMAP[state.vmap] ? state.vmap : 'gross';
+  const days = (parseDay(state.to) - parseDay(state.from)) / DAY + 1;
+  main.innerHTML = `
+  <details class="card vlp-intro">
+    <summary><b>Virtual Lead Parties in the Balancing Mechanism</b>${tip('vlp')} <span class="muted small">Aggregators and other non-supplier flexibility, separated from the rest of the BM. Click for what this means for a supplier.</span></summary>
+    <div class="vlp-body">
+      <p>A <b>Virtual Lead Party</b> (VLP) offers flexibility from sites it does not supply: it groups customers' meters, or its own batteries, into <b>secondary BM units</b>, one per GSP group, with ids starting <code>V__</code>. Elexon publishes their accepted bids and offers like any other unit's, so this tab is the Balancing Mechanism narrowed to those units, set against everything else.</p>
+      <h3>Why it matters to a supplier</h3>
+      <ul>
+        <li><b>Your customers can be in a VLP's unit without you being told by this data.</b> Public data names the VLP, the GSP group and the volumes, not which supplier's sites are inside, so the GSP group map is the closest public guide to where the exposure is.</li>
+        <li><b>Offers move your customers' demand down; bids move it up.</b> A VLP offer means less import (or more export) at its sites; a bid, more import. Broadly, the BSC corrects your imbalance position for the volume a VLP delivers (modification P344), but your customer's meter, and so what you bill, still records the change: a turn-down is energy you bought and cannot bill, a turn-up energy you bill but did not buy.</li>
+        <li><b>Timing</b>: the time-of-day chart shows when VLPs are dispatched, to set against your shape and your hedges.</li>
+        <li><b>Not every <code>V__</code> unit is customers' demand.</b> Several VLPs register standalone batteries as secondary BM units (most of Habitat Energy's carry battery site names), which only affect a supplier through that battery's own import and export.</li>
+        <li><b>Virtual Trading Parties</b> (modification P415) extend the role to the wholesale market. Those trades are not BM actions and do not appear in Elexon's BM data, so they are not in this tab.</li>
+      </ul>
+      <p class="muted small">This is a summary for orientation, not a reading of the BSC: check the current Code (Sections Q, S and T) and Elexon's guidance for how delivered volumes are allocated to you.</p>
+    </div>
+  </details>
+  <div class="grid kpis" id="vKpis"></div>
+  <div class="card">
+    <div class="card-head">
+      <div><h2>VLP ${esc((METRICS[state.metric] || METRICS.net).label.toLowerCase())} over time</h2><div class="sub" id="timeNote"></div></div>
+      <div class="controls">
+        <label class="small muted">Measure ${select('metric', METRIC_OPTS, state.metric)}${tip('measure')}</label>
+        <label class="small muted">Split by ${select('split', splitOpts(), state.split)}${tip('splitby')}</label>
+        <button class="btn" id="toggleTable">Table</button>
+      </div>
+    </div>
+    <div class="chart tall" id="timeChart"></div>
+    <div id="timeTable" hidden></div>
+  </div>
+  <div class="grid cols2">
+    <div class="card">
+      <div class="card-head"><div><h2>VLP share of the BM${tip('vlpshare')}</h2><div class="sub">Share of all accepted BM offer and bid volume that came from the secondary BM units shown.</div></div></div>
+      <div class="chart" id="vShare"></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><div><h2>Time of day${tip('vlptod')}</h2><div class="sub" id="vTodNote"></div></div></div>
+      <div class="chart" id="vTod"></div>
+    </div>
+  </div>
+  <div class="grid cols2">
+    <div class="card">
+      <div class="card-head"><div><h2>By GSP group${tip('vlpgsp')}</h2><div class="sub" id="vMapNote"></div></div>
+        <div class="controls"><label class="small muted">Colour by ${select('vmap', Object.entries(VMAP), vm)}</label></div></div>
+      <div class="chart tall" id="vMap"></div>
+      <div id="vGspTable"></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><div><h2>Prices: VLPs against other BM units${tip('vlptype')}</h2><div class="sub">Volume-weighted average accepted price by BM unit type, whole BM over the same range (party, unit, region and technology filters not applied).</div></div></div>
+      <div class="chart tall" id="vType"></div>
+      <div id="vTypeTable"></div>
+    </div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <div class="card-head"><div><h2>Virtual Lead Parties${tip('party')}</h2><div class="sub">Click a party to filter the tab to it.</div></div></div>
+    <div id="vParties"></div>
+  </div>
+  <div class="grid cols2">
+    <div class="card">
+      <div class="card-head"><div><h2>Secondary BM units${tip('bmunits')}</h2><div class="sub" id="vUnitsNote">Click a unit for its page: bid-offer prices, notifications and each instruction.</div></div></div>
+      <div id="vUnits"></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><div><h2>Day × settlement period${tip('heatmap')}</h2><div class="sub">VLP ${esc((METRICS[state.metric] || METRICS.net).label.toLowerCase())} per half-hour; click a day to zoom to it.</div></div></div>
+      <div class="chart tall" id="heatChart"></div>
+    </div>
+  </div>`;
+  for (const k of ['metric', 'split', 'vmap']) $('#' + k).onchange = (e) => update({ [k]: e.target.value }, true);
+  $('#toggleTable').onclick = () => { const t = $('#timeTable'); t.hidden = !t.hidden; $('#timeChart').hidden = !t.hidden; $('#toggleTable').textContent = t.hidden ? 'Table' : 'Chart'; if (t.hidden) charts.get($('#timeChart'))?.resize(); };
+  loading($('#vKpis'), () => vKpis($('#vKpis')));
+  loading($('#timeChart'), () => timeChart($('#timeChart'), $('#timeTable')));
+  loading($('#vShare'), () => vShare($('#vShare')));
+  loading($('#vTod'), () => vTod($('#vTod'), days));
+  loading($('#vMap'), () => vMap($('#vMap'), $('#vGspTable'), vm));
+  loading($('#vType'), () => vType($('#vType'), $('#vTypeTable')));
+  loading($('#vParties'), () => vParties($('#vParties')));
+  loading($('#vUnits'), () => vUnits($('#vUnits')));
+  if (days > 400) $('#heatChart').innerHTML = '<div class="empty">Narrow the range to 400 days or fewer to see the half-hourly grid.</div>';
+  else loading($('#heatChart'), () => heatmapChart($('#heatChart')));
+}
+
+async function vKpis(el) {
+  const [v, all, parties] = await Promise.all([api('summary', queryParams()), api('summary', restParams()), api('breakdown', queryParams({ group: 'party' }))]);
+  const rest = vMinus(all, v);
+  const net = n0(v.offer_cash) + n0(v.bid_cash), allNet = n0(all.offer_cash) + n0(all.bid_cash);
+  if (!v.n_units) {
+    el.innerHTML = `<div class="card" style="grid-column:1/-1"><div class="empty">No accepted VLP actions in this range${Object.keys(state.filters).length ? ' with these filters' : ''}.</div></div>`;
+    return;
+  }
+  el.innerHTML = [
+    kpi('VLP net cost', gbp(net), `whole BM: ${gbp(allNet)} · ${gbp(net / v.n_days)} a day`, 'net'),
+    kpi('VLP offers', mwh(v.offer_vol), `${gbp(v.offer_cash)} @ ${price(ratio(v.offer_cash, v.offer_vol))} · rest of BM @ ${price(ratio(rest.offer_cash, rest.offer_vol))}`, 'vlpoffer'),
+    kpi('VLP bids', mwh(v.bid_vol), `${gbp(v.bid_cash)} @ ${price(ratio(v.bid_cash, v.bid_vol))} · rest of BM @ ${price(ratio(rest.bid_cash, rest.bid_vol))}`, 'vlpbid'),
+    kpi('Share of BM volume', pct(shareOf(grossVol(v), grossVol(all))), `offers ${pct(shareOf(v.offer_vol, all.offer_vol))} · bids ${pct(shareOf(v.bid_vol, all.bid_vol))}`, 'vlpshare'),
+    kpi('VLP units with actions', nf(0).format(v.n_units), `${parties.rows.length} lead part${parties.rows.length === 1 ? 'y' : 'ies'} · of ${nf(0).format(all.n_units)} BM units`, 'units'),
+    kpi('SO-flagged', pct(shareOf(v.so_vol, grossVol(v))), v.so_cash == null ? 'no SO-flagged VLP actions' : `${gbp(v.so_cash)} net · share of VLP volume (approx.)`, 'so'),
+  ].join('');
+}
+
+/** VLP share of accepted offer and bid volume per time bucket. */
+async function vShare(el) {
+  const bucket = resolveBucket();
+  const [v, all] = await Promise.all([api('agg', queryParams({ bucket })), api('agg', restParams({ bucket }))]);
+  const cats = allBuckets(bucket, all.rows);
+  const vi = new Map(v.rows.map((r) => [r.t, r])), ai = new Map(all.rows.map((r) => [r.t, r]));
+  const at = (t, f) => { const a = ai.get(t); return a ? f(vi.get(t) || {}, a) : null; };
+  const defs = [['Offers', (x, a) => shareOf(x.offer_vol, a.offer_vol), css('--s1')], ['Bids', (x, a) => shareOf(x.bid_vol, a.bid_vol), css('--s2')]];
+  const o = baseOption();
+  o.xAxis = { ...o.xAxis, type: 'category', data: cats.map((t) => bucketLabel(t, bucket)) };
+  o.yAxis = { ...o.yAxis, type: 'value', axisLabel: { ...o.yAxis.axisLabel, formatter: (x) => pct(x) } };
+  o.series = defs.map(([name, f, color]) => ({ name, type: 'line', color, lineStyle: { width: 2 }, symbol: 'circle', symbolSize: cats.length > 60 ? 0 : 5,
+    data: cats.map((t) => at(t, f)) }));
+  o.tooltip.formatter = (ps) => {
+    const t = cats[ps[0].dataIndex], x = vi.get(t) || {}, a = ai.get(t) || {};
+    return tipLines(ps[0].axisValueLabel, [
+      `Offers: ${pct(shareOf(x.offer_vol, a.offer_vol))} (${mwh(x.offer_vol)} of ${mwh(a.offer_vol)})`,
+      `Bids: ${pct(shareOf(x.bid_vol, a.bid_vol))} (${mwh(x.bid_vol)} of ${mwh(a.bid_vol)})`]) + clickHint(drillHint(t, bucket));
+  };
+  const c = chart(el);
+  c.setOption(o, true);
+  el.style.cursor = bucket === 'tod' ? 'default' : 'pointer';
+  c.getZr().off('click');
+  c.getZr().on('click', (ev) => { const p = c.convertFromPixel({ seriesIndex: 0 }, [ev.offsetX, ev.offsetY]); const t = cats[p?.[0]]; if (t != null && bucket !== 'tod') drillTime(t, bucket); });
+}
+
+/** When in the day VLPs are dispatched: average accepted MWh per half-hour of the day, and their share of the BM then. */
+async function vTod(el, days) {
+  const [v, all] = await Promise.all([api('agg', queryParams({ bucket: 'tod' })), api('agg', restParams({ bucket: 'tod' }))]);
+  const sps = Array.from({ length: 48 }, (_, i) => i + 1);
+  const vi = new Map(v.rows.map((r) => [r.t, r])), ai = new Map(all.rows.map((r) => [r.t, r]));
+  $('#vTodNote').textContent = `Average accepted VLP volume per half-hour across the ${days} day${days === 1 ? '' : 's'} (offers up, bids down), and the VLP share of all BM volume in that half-hour.`;
+  const o = baseOption();
+  o.xAxis = { ...o.xAxis, type: 'category', data: sps.map(spTime) };
+  o.yAxis = [{ ...o.yAxis, type: 'value', axisLabel: { ...o.yAxis.axisLabel, formatter: (x) => mwh(x).replace(' MWh', '') } },
+    { ...o.yAxis, type: 'value', position: 'right', splitLine: { show: false }, axisLabel: { ...o.yAxis.axisLabel, formatter: (x) => pct(x) } }];
+  const bar = { type: 'bar', stack: 'a', barCategoryGap: '20%', emphasis: { disabled: true } };
+  o.series = [
+    { ...bar, name: 'Offers', color: css('--s1'), data: sps.map((sp) => (vi.get(sp) ? n0(vi.get(sp).offer_vol) / days : null)) },
+    { ...bar, name: 'Bids', color: css('--s2'), data: sps.map((sp) => (vi.get(sp) ? n0(vi.get(sp).bid_vol) / days : null)) },
+    { name: 'Share of BM volume', type: 'line', yAxisIndex: 1, color: css('--s4'), symbol: 'none', lineStyle: { width: 2 },
+      data: sps.map((sp) => (ai.get(sp) ? shareOf(grossVol(vi.get(sp) || {}), grossVol(ai.get(sp))) : null)) },
+  ];
+  o.tooltip.formatter = (ps) => {
+    const sp = sps[ps[0].dataIndex], x = vi.get(sp) || {}, a = ai.get(sp) || {};
+    return tipLines(`${spTime(sp)}–${spTime(sp + 1)} (SP ${sp})`, [
+      `Offers: ${mwh(n0(x.offer_vol) / days)} a day @ ${price(ratio(x.offer_cash, x.offer_vol))}`,
+      `Bids: ${mwh(n0(x.bid_vol) / days)} a day @ ${price(ratio(x.bid_cash, x.bid_vol))}`,
+      `Share of BM volume: ${pct(shareOf(grossVol(x), grossVol(a)))}`]);
+  };
+  chart(el).setOption(o, true);
+}
+
+/** GSP-group map and table of VLP activity; click a region to filter the tab to it. */
+async function vMap(el, tableEl, vm) {
+  const params = queryParams();
+  delete params.gsp;  // the map always shows every region, with the filtered one picked out
+  const data = await api('units', params);
+  const by = new Map(), names = new Map();
+  for (const r of data.rows) {
+    const g = vGsp(r.bm_unit);
+    const a = by.get(g) || { g, offer_vol: 0, bid_vol: 0, offer_cash: 0, bid_cash: 0, units: 0, parties: new Set() };
+    for (const k of ['offer_vol', 'bid_vol', 'offer_cash', 'bid_cash']) a[k] += n0(r[k]);
+    a.units += 1; a.parties.add(r.party);
+    by.set(g, a);
+    if (r.gsp) (names.get(g) || names.set(g, new Set()).get(g)).add(r.gsp);
+  }
+  const val = (a) => (!a ? 0 : vm === 'gross' ? grossVol(a) : vm === 'net' ? a.offer_cash + a.bid_cash : vm === 'units' ? a.units : Math.abs(a[vm]));
+  const fmt = vm === 'net' ? gbp : vm === 'units' ? (x) => nf(0).format(x) : mwh;
+  const picked = state.filters.gsp?.length ? GSP_ORDER.find((g) => [...(names.get(g) || [])].some((n) => state.filters.gsp.includes(n))) : null;
+  const vals = GSP_ORDER.map((g) => ({ name: g, value: val(by.get(g)) }));
+  const signed = vm === 'net' && vals.some((x) => x.value < 0);
+  const M = Math.max(1e-9, ...vals.map((x) => Math.abs(x.value)));
+  $('#vMapNote').textContent = `${VMAP[vm]} of secondary BM units in each GSP group, ${rangeLabel(state)}. Click a region to filter the tab to it${picked ? ', again to show every region' : ''}.`;
+  if (!GSP_MAP) { GSP_MAP = await (await fetch('/static/vendor/gsp_groups.json')).json(); echarts.registerMap('gspg', GSP_MAP); }
+  const c = chart(el);
+  c.setOption({
+    animation: false,
+    tooltip: { trigger: 'item', backgroundColor: css('--surface'), borderColor: css('--axis'), textStyle: { color: css('--ink') }, confine: true,
+      formatter: (p) => { const a = by.get(p.name);
+        return tipLines(`${gspName(p.name)} · ${p.name}`, a ? [`Offers ${mwh(a.offer_vol)} @ ${price(ratio(a.offer_cash, a.offer_vol))}`, `Bids ${mwh(a.bid_vol)} @ ${price(ratio(a.bid_cash, a.bid_vol))}`,
+          `Net cost ${gbp(a.offer_cash + a.bid_cash)}`, `${a.units} unit${a.units === 1 ? '' : 's'} · ${[...a.parties].join(', ')}`] : ['No accepted VLP actions']) +
+          clickHint(!a ? '' : picked === p.name ? 'Click to show every region' : `Click to filter the tab to ${gspName(p.name)}`); } },
+    visualMap: { show: false, min: signed ? -M : 0, max: M, inRange: { color: signed ? [css('--div-neg'), css('--div-mid'), css('--div-pos')] : [css('--seq-lo'), css('--seq-hi')] } },
+    series: [{ type: 'map', map: 'gspg', roam: false, aspectScale: 0.6, top: 8, bottom: 8, selectedMode: false, data: vals,
+      itemStyle: { borderColor: css('--surface'), borderWidth: 1 }, emphasis: { itemStyle: { areaColor: css('--s4') }, label: { color: css('--ink') } },
+      label: { show: true, fontSize: 10, color: css('--ink'), textBorderColor: css('--surface'), textBorderWidth: 2, formatter: (p) => (Math.abs(p.value) >= M * 0.04 ? fmt(p.value) : '') },
+      labelLayout: { hideOverlap: true } }],
+  }, true);
+  if (picked) c.dispatchAction({ type: 'highlight', name: picked });
+  const pick = (g) => {
+    if (!by.has(g)) return;
+    const f = { ...state.filters };
+    if (picked === g) delete f.gsp; else f.gsp = [...(names.get(g) || [])];
+    drill({ filters: f });
+  };
+  c.on('click', (p) => pick(p.name));
+  const rows = [...by.values()].map((a) => ({ ...a, name: gspName(a.g), net: a.offer_cash + a.bid_cash, gross: grossVol(a), np: a.parties.size }));
+  table(tableEl, [
+    { key: 'name', label: 'GSP group' }, { key: 'units', label: 'Units', num: true }, { key: 'np', label: 'VLPs', num: true, cls: 'hide-sm' },
+    { key: 'offer_vol', label: 'Offers', num: true, fmt: mwh, tip: 'vlpoffer' }, { key: 'bid_vol', label: 'Bids', num: true, fmt: mwh, tip: 'vlpbid' },
+    { key: 'net', label: 'Net cost', num: true, fmt: (x) => gbp(x), cls: 'hide-sm' },
+  ], rows, { onRow: (r) => pick(r.g), rowCls: (r) => (r.g === picked ? 'sel' : ''), rowTip: (r) => `Filter the tab to ${r.name}`, sort: { key: 'gross', desc: true } });
+}
+
+/** Average accepted prices of VLP units against the other BM unit types. */
+async function vType(el, tableEl) {
+  const data = await api('breakdown', restParams({ group: 'unit_type' }));
+  const order = ['V', 'S', 'E', 'T', 'G', 'I'];
+  const rows = data.rows.filter((r) => grossVol(r) > 0).sort((a, b) => (order.indexOf(a.g) + 99 * (order.indexOf(a.g) < 0)) - (order.indexOf(b.g) + 99 * (order.indexOf(b.g) < 0)));
+  const tot = rows.reduce((s, r) => s + grossVol(r), 0);
+  const o = baseOption();
+  const narrow = el.clientWidth < 560;  // phones: the type letters only, the table below names them
+  o.xAxis = { ...o.xAxis, type: 'category', data: rows.map((r) => (narrow ? `${r.g === 'V' ? 'VLP' : r.g === 'S' ? 'Supplier' : r.g}` : UTYPE[r.g] || r.g)), axisLabel: { ...o.xAxis.axisLabel, interval: 0, width: 90, overflow: 'break' } };
+  o.yAxis = { ...o.yAxis, type: 'value', axisLabel: { ...o.yAxis.axisLabel, formatter: (x) => price(x).replace('/MWh', '') } };
+  const bar = { type: 'bar', barMaxWidth: 34, emphasis: { disabled: true }, label: { show: true, position: 'top', fontSize: 11, color: css('--ink2'), formatter: (p) => price(p.value).replace('/MWh', '') } };
+  const hl = (r, c) => ({ color: c, opacity: r.g === 'V' ? 1 : 0.55 });
+  o.series = [
+    { ...bar, name: 'Average offer price', color: css('--s1'), data: rows.map((r) => ({ value: ratio(r.offer_cash, r.offer_vol), itemStyle: hl(r, css('--s1')) })) },
+    { ...bar, name: 'Average bid price', color: css('--s2'), data: rows.map((r) => ({ value: ratio(r.bid_cash, r.bid_vol), itemStyle: hl(r, css('--s2')) })) },
+  ];
+  o.tooltip = { ...o.tooltip, axisPointer: { type: 'shadow', shadowStyle: { color: css('--wash') } }, formatter: (ps) => {
+    const r = rows[ps[0].dataIndex];
+    return tipLines(UTYPE[r.g] || r.g, [`Offers ${mwh(r.offer_vol)} @ ${price(ratio(r.offer_cash, r.offer_vol))}`, `Bids ${mwh(r.bid_vol)} @ ${price(ratio(r.bid_cash, r.bid_vol))}`,
+      `${pct(shareOf(grossVol(r), tot))} of BM volume · ${r.n_units} unit${r.n_units === 1 ? '' : 's'}`]); } };
+  chart(el).setOption(o, true);
+  table(tableEl, [
+    { key: 'name', label: 'BM unit type' }, { key: 'n_units', label: 'Units', num: true },
+    { key: 'share', label: 'Share of volume', num: true, fmt: pct },
+    { key: 'op', label: 'Avg offer', num: true, fmt: price, tip: 'avgoffer' }, { key: 'bp', label: 'Avg bid', num: true, fmt: price, tip: 'avgbid' },
+  ], rows.map((r) => ({ ...r, name: UTYPE[r.g] || r.g, share: shareOf(grossVol(r), tot), op: ratio(r.offer_cash, r.offer_vol), bp: ratio(r.bid_cash, r.bid_vol) })),
+  { rowCls: (r) => (r.g === 'V' ? 'sel' : '') });
+}
+
+async function vParties(el) {
+  const data = await api('breakdown', queryParams({ group: 'party' }));
+  const rows = data.rows.map((r) => ({ ...r, net: n0(r.offer_cash) + n0(r.bid_cash), gross: grossVol(r), op: ratio(r.offer_cash, r.offer_vol), bp: ratio(r.bid_cash, r.bid_vol) }));
+  const tot = rows.reduce((s, r) => s + r.gross, 0);
+  for (const r of rows) r.share = shareOf(r.gross, tot);
+  const picked = state.filters.party || [];
+  table(el, [
+    { key: 'g', label: 'Lead party' }, { key: 'n_units', label: 'Units', num: true },
+    { key: 'share', label: 'Share of VLP volume', num: true, fmt: pct },
+    { key: 'offer_vol', label: 'Offers', num: true, fmt: mwh, tip: 'vlpoffer' }, { key: 'op', label: 'Avg offer', num: true, fmt: price, tip: 'avgoffer', cls: 'hide-sm' },
+    { key: 'bid_vol', label: 'Bids', num: true, fmt: mwh, tip: 'vlpbid' }, { key: 'bp', label: 'Avg bid', num: true, fmt: price, tip: 'avgbid', cls: 'hide-sm' },
+    { key: 'net', label: 'Net cost', num: true, fmt: (x) => gbp(x), tip: 'net' },
+  ], rows, { onRow: (r) => { const f = { ...state.filters }; if (picked.includes(r.g)) delete f.party; else f.party = [r.g]; drill({ filters: f }); },
+    rowCls: (r) => (picked.includes(r.g) ? 'sel' : ''), rowTip: (r) => (picked.includes(r.g) ? 'Show every party again' : `Filter the tab to ${r.g}`), sort: { key: 'gross', desc: true } });
+}
+
+async function vUnits(el) {
+  const data = await api('units', queryParams());
+  const rows = data.rows.map((r) => ({ ...r, gspn: gspName(vGsp(r.bm_unit)), net: n0(r.offer_cash) + n0(r.bid_cash), gross: grossVol(r) }));
+  $('#vUnitsNote').textContent = `${rows.length} secondary BM unit${rows.length === 1 ? '' : 's'} with accepted actions. Click one for its page: bid-offer prices, notifications and each instruction.`;
+  table(el, [
+    { key: 'bm_unit', label: 'Unit', cls: 'wrap', html: (r) => `${esc(r.bm_unit)}${r.name && r.name !== r.bm_unit ? ` <span class="muted small">${esc(r.name)}</span>` : ''}` },
+    { key: 'party', label: 'Lead party', cls: 'hide-sm' }, { key: 'gspn', label: 'GSP group', cls: 'hide-sm', tip: 'gspgroup' },
+    { key: 'offer_vol', label: 'Offers', num: true, fmt: mwh }, { key: 'bid_vol', label: 'Bids', num: true, fmt: mwh },
+    { key: 'net', label: 'Net cost', num: true, fmt: (x) => gbp(x) }, { key: 'n_periods', label: 'Active periods', num: true, cls: 'hide-sm', tip: 'activeperiods' },
+  ], rows, { onRow: (r) => openUnit(r.bm_unit), rowTip: (r) => `Open the unit page for ${r.bm_unit}`, sort: { key: 'gross', desc: true }, limit: 200 });
+}
+
 let pollTimer = null;
 async function viewData(main) {
   const today = iso(new Date());
@@ -3841,6 +4136,19 @@ const SOURCES = {
       <li>${ELX('MID')}: Elexon's market index price (APX) for each event half-hour.</li>
       <li>Zone outlines: NESO's DFS 12-zone GeoJSON (February 2026), simplified; area names are approximate.</li>
     </ul>${SHARED_REFRESH}`],
+  vlp: ['Elexon BMRS: BM settlement cashflows and volumes for BM unit type V (secondary BM units), BOALF acceptances, BM unit reference data', `
+    <h3>Sources</h3>
+    <ul>
+      <li>The same Balancing Mechanism data as the Overview (${ELX('DISPTAV')} volumes and ${ELX('EBOCF')} cashflows per unit, settlement period and bid-offer pair; ${ELX('BOALF')} for the SO flag), narrowed to units whose BM unit type is <b>V</b>: the secondary BM units registered by Virtual Lead Parties (ids starting <code>V__</code>). The type comes with each settlement record and from Elexon's BM unit reference data.</li>
+      <li>"Rest of the BM" and the shares are the same queries without the narrowing, so they follow the same range and filters.</li>
+      <li>GSP group comes from the unit id (<code>V__B…</code> is _B, East Midlands): Elexon's reference data spells group names several ways, the id does not. Region outlines as on the REMIT tab.</li>
+    </ul>
+    <h3>Limits</h3>
+    <ul>
+      <li>Public data names each unit's VLP and GSP group, not the sites or their suppliers.</li>
+      <li>Some secondary BM units are standalone batteries rather than customers' demand; the unit name often gives this away (battery site names), but Elexon does not flag it.</li>
+      <li>Virtual Trading Party (BSC P415) wholesale trades and non-BM services such as the DFS are not BM actions and are not included.</li>
+    </ul>${BM_NOTES}`],
   data: ['Elexon Insights Solution (BMRS) API', `
     <h3>Sources</h3>
     <p>This tab fetches Balancing Mechanism data from the ${ELEXON_API}: about seven requests per settlement day (indicative volumes and cashflows for bids and offers, ${ELX('BOALF')} acceptances, ${ELX('DISEBSP')} system prices and ${ELX('DISBSAD')}). Each dataset is stored as one file per settlement day.</p>
@@ -3909,6 +4217,7 @@ async function render() {
     else if (state.view === 'interconnectors') await viewInterconnectors(main);
     else if (state.view === 'icrev') await viewReversals(main);
     else if (state.view === 'dfs') await viewDfs(main);
+    else if (state.view === 'vlp') await viewVlp(main);
     else if (state.view === 'data') await viewData(main);
     else viewOverview(main);
   } catch (e) { console.error(e); main.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
@@ -3921,6 +4230,7 @@ document.querySelectorAll('#nav a').forEach((a) => a.onclick = (e) => {
   e.preventDefault();
   state.view = a.dataset.view; state.unit = null;
   if (state.view === 'overview') { state.split = 'tech'; state.bdim = 'party'; }
+  if (state.view === 'vlp') { state.split = 'party'; state.metric = 'volume'; delete state.filters.unit_type; }
   writeHash();
 });
 addEventListener('hashchange', render);

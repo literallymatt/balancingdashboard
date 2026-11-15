@@ -235,6 +235,19 @@ SQLite (see "What is stored" below).
   left out unless ticked. Fetched with the Total costs data (`bmdash costs`, the end of `bmdash ingest`, or the Refresh button):
   about 60k rows plus a market-price request per month with events, about 20 seconds; later refreshes re-read only the current year's files. Stored in `data/dfs_hh.parquet`,
   `data/dfs_bid.parquet` and `data/dfs_cap.parquet` (phone: the `dfs_hh`, `dfs_bid` and `dfs_cap` tables; `harness ... dfs --db /tmp/bm.sqlite` fetches just these).
+- **VLPs tab**: Balancing Mechanism actions by Virtual Lead Parties, separated from every other BM unit. VLPs (BSC modification
+  P344) offer flexibility from sites they do not supply, grouped into *secondary BM units* (ids `V__`, one GSP group each), and
+  Elexon gives those units BM unit type `V` in both the settlement data and the reference data, so the split is exact. The tab is
+  the ordinary BM data narrowed to type `V` (the UI adds `unit_type=V` to the usual `/api/agg`, `/api/summary`, `/api/breakdown`,
+  `/api/units` and `/api/heatmap` queries), so it needs no new endpoints or downloads and runs unchanged on the phone. "Rest of the
+  BM" and the shares are the same queries without the narrowing; party, unit, GSP group and technology filters narrow only the VLP
+  side, since they pick VLP units. It shows KPIs (VLP net cost, offers and bids with their average prices against the rest of the
+  BM, share of BM volume, units and parties, SO-flagged share), the usual time chart split by party, GSP group and so on, the VLP
+  share of BM volume over time, a time-of-day profile, a GSP group map and table (group taken from the unit id, because Elexon
+  spells group names several ways), average prices by BM unit type (T, E, S, V), a lead-party table, the units and a day x
+  settlement-period grid. A collapsible note explains what VLP actions mean for a supplier. Limits: public data does not say
+  which supplier's sites are in a VLP's unit; several VLPs register standalone batteries as secondary units; Virtual Trading Party
+  (P415) wholesale trades are not BM actions and are not shown.
 - **Instruction replay**: on a unit's page, the Day detail card can replay NESO's instructions
   for the day in the order they were issued (plays and loops on its own by default; pause, step,
   slider, and a Loop toggle; reduced-motion users get the final state), showing the unit's plan
