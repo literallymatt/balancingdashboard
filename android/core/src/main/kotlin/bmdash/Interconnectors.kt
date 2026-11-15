@@ -231,4 +231,85 @@ object Interconnectors {
         return mapOf("rows" to db.query("SELECT $b AS t, ic AS g, $FLOW FROM ic_flow WHERE settlement_date BETWEEN ? AND ?$cond GROUP BY 1, 2 ORDER BY 1, 2",
             listOf<Any?>(from, to) + vals))
     }
+
+    // ------------------------------------------------------------ flow reversals (mirrors api.ic_reversals; see the comment above REV_LINKS there)
+
+    private val REV_LINKS = listOf("IFA", "IFA2", "ELEC", "NEMO", "BRTN", "VKL")
+    private const val REV_FROM = "2026-05-20"
+    private const val REV_LINK_CAP = 300.0
+    private const val REV_TOTAL_CAP = 1500.0
+    private const val REV_MIN_MW = 50.0
+    private const val REV_TOL = 1.0
+    private const val REV_SQL = """SELECT f.d AS d, f.h AS h, f.ic AS ic, f.flow AS flow, coalesce(t.neso, 0) AS neso, coalesce(t.cp, 0) AS cp
+        FROM (SELECT settlement_date AS d, sp + sp % 2 AS h, ic, avg(flow_mw) AS flow FROM ic_flow
+              WHERE settlement_date BETWEEN ? AND ? GROUP BY 1, 2, 3) f
+        LEFT JOIN (SELECT settlement_date AS d, sp + sp % 2 AS h, ic, sum(volume) AS neso,
+                          sum(CASE WHEN kind = 'trade' THEN volume ELSE 0 END) AS cp FROM ic_trade
+                   WHERE settlement_date BETWEEN ? AND ? GROUP BY 1, 2, 3) t
+        ON t.d = f.d AND t.h = f.h AND t.ic = f.ic
+        ORDER BY 1, 2, 3"""
+
+    private fun revBucket(d: String, hour: Int, bucket: String): String = when (bucket) {
+        "hour" -> "${d}T${"%02d".format(minOf(hour, 23))}:00:00"
+        "week" -> LocalDate.parse(d).let { it.minusDays((it.dayOfWeek.value - 1).toLong()) }.toString() + "T00:00:00"
+        "month" -> d.substring(0, 8) + "01T00:00:00"
+        else -> "${d}T00:00:00"
+    }
+
+    /** Hour by hour and link by link: flow, NESO's trades, the flow without them, reversals and the trading limit. */
+    fun reversals(db: SqlDb, from: String, to: String, bucketIn: String): Map<String, Any?> {
+        val bucket = if (bucketIn in listOf("hour", "day", "week", "month")) bucketIn else if (bucketIn == "sp") "hour" else "day"
+        val raw = db.query(REV_SQL, listOf(from, to, from, to))
+        val hours = LinkedHashMap<String, MutableMap<String, Any?>>()
+        val series = LinkedHashMap<String, MutableMap<String, Any?>>()
+        val events = ArrayList<Map<String, Any?>>()
+        val detail = ArrayList<Map<String, Any?>>()
+        val keepDetail = java.time.temporal.ChronoUnit.DAYS.between(LocalDate.parse(from), LocalDate.parse(to)) <= 6
+        for (r in raw) {
+            val d = r.str("d")!!.take(10)
+            val hour = (r.long("h") ?: 0L).toInt() / 2 - 1
+            val ic = r.str("ic")!!
+            val flow = r.dbl("flow") ?: 0.0
+            val neso = r.dbl("neso") ?: 0.0
+            val cp = r.dbl("cp") ?: 0.0
+            val pre = flow - neso
+            val flipped = Math.abs(pre) >= REV_MIN_MW && Math.abs(flow) >= REV_MIN_MW && (pre > 0) != (flow > 0)
+            val against = if (Math.abs(pre) >= REV_MIN_MW && cp * pre < 0) Math.abs(cp) else 0.0
+            val over = d >= REV_FROM && ic in REV_LINKS && against > REV_LINK_CAP + REV_TOL
+            val row = linkedMapOf<String, Any?>("d" to d, "hour" to hour, "ic" to ic, "flow" to flow, "neso" to neso, "cp" to cp, "pre" to pre,
+                "flipped" to flipped, "against" to against, "over" to over)
+            if (keepDetail) detail.add(row)
+            if (flipped || against != 0.0) events.add(row)
+            val h = hours.getOrPut("$d|$hour") { linkedMapOf("d" to d, "hour" to hour, "against" to 0.0, "n_over" to 0, "flips" to 0, "links" to ArrayList<String>()) }
+            if (ic in REV_LINKS) h["against"] = (h["against"] as Double) + against
+            if (over) h["n_over"] = (h["n_over"] as Int) + 1
+            if (flipped) h["flips"] = (h["flips"] as Int) + 1
+            @Suppress("UNCHECKED_CAST")
+            if (flipped || against != 0.0) (h["links"] as ArrayList<String>).add(ic)
+            val t = revBucket(d, hour, bucket)
+            val s = series.getOrPut("$t|$ic") { linkedMapOf("t" to t, "ic" to ic, "flip_hours" to 0, "against_mwh" to 0.0, "over_hours" to 0, "hours" to 0) }
+            if (flipped) s["flip_hours"] = (s["flip_hours"] as Int) + 1
+            s["against_mwh"] = (s["against_mwh"] as Double) + against
+            if (over) s["over_hours"] = (s["over_hours"] as Int) + 1
+            s["hours"] = (s["hours"] as Int) + 1
+        }
+        for (h in hours.values) h["total_over"] = (h["d"] as String) >= REV_FROM && (h["against"] as Double) > REV_TOTAL_CAP + REV_TOL
+        val restricted = hours.values.filter { (it["d"] as String) >= REV_FROM }
+        val summary = linkedMapOf<String, Any?>(
+            "hours" to hours.size, "restricted_hours" to restricted.size,
+            "flip_hours" to hours.values.count { (it["flips"] as Int) > 0 }, "flip_link_hours" to events.count { it["flipped"] == true },
+            "against_mwh" to events.filter { it["ic"] in REV_LINKS }.sumOf { it["against"] as Double },
+            "over_link_hours" to events.count { it["over"] == true }, "over_hours" to hours.values.count { (it["n_over"] as Int) > 0 },
+            "total_over_hours" to hours.values.count { it["total_over"] == true },
+            "max_against" to (restricted.maxOfOrNull { it["against"] as Double } ?: 0.0),
+            "max_link_against" to (events.filter { (it["d"] as String) >= REV_FROM && it["ic"] in REV_LINKS }.maxOfOrNull { it["against"] as Double } ?: 0.0),
+        )
+        val sorted = events.sortedWith(compareBy<Map<String, Any?>>({ if (it["over"] == true) 0 else 1 }, { -(it["against"] as Double) }, { it["d"] as String }, { it["hour"] as Int }))
+        val hlist = hours.values.filter { (it["against"] as Double) != 0.0 || (it["flips"] as Int) > 0 || (it["n_over"] as Int) > 0 }
+        return mapOf(
+            "rules" to mapOf("from" to REV_FROM, "link_cap" to REV_LINK_CAP, "total_cap" to REV_TOTAL_CAP, "min_mw" to REV_MIN_MW, "links" to REV_LINKS),
+            "summary" to summary, "series" to series.values.sortedWith(compareBy({ it["t"] as String }, { it["ic"] as String })), "hours" to hlist,
+            "events" to sorted.take(1000), "n_events" to events.size, "detail" to detail,
+        )
+    }
 }
