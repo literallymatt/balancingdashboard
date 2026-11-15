@@ -189,3 +189,8 @@ button.btn.small { padding: 3px 10px; font-size: 12px; }
 @media (max-width: 700px) { .replay-status { min-height: 8.4em; } }
 .kpi.click { cursor: pointer; }
 .kpi.click:hover { border-color: var(--axis); }
+
+/* A card that a click just changed (see revealPending in app.js). */
+.card.flash { animation: card-flash 1.5s ease-out; }
+@keyframes card-flash { 0%, 30% { box-shadow: 0 0 0 3px var(--s1); } 100% { box-shadow: 0 0 0 3px transparent; } }
+@media (prefers-reduced-motion: reduce) { .card.flash { animation: none; box-shadow: 0 0 0 3px var(--s1); } }
