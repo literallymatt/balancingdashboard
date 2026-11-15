@@ -243,6 +243,15 @@ SQLite (see "What is stored" below).
   each moment, or its own plan when none does. Checked against Elexon's settled volumes on
   9 unit-days (hundreds of acceptances each): matches to within 0.1 MWh, whereas "a new
   instruction cancels everything earlier" is off by 3.4% and "add them all up" by 28%.
+  The Day detail chart above it draws the same model's end state ("Instructed output") rather
+  than each acceptance's own profile (still available from the legend), and the Acceptances
+  table shows one row per acceptance with its profile in words ("410 → 38 → 0 MW"; tick
+  *Show each point* for Elexon's rows).
+- **Click-throughs**: the Back button and breadcrumb trail name the page as well as the range
+  ("Overview · 9 Nov – 15 Nov 2026 › Unit T_RYHPS-1 › detail for Thu 12 Nov 2026"). A click
+  that changes a card further down the page (a unit's day, a boundary, a DFS event's bids)
+  scrolls that card into view and flashes it. The header's coverage note follows the tab, since
+  each tab has its own source and dates.
 - **`harness/`**: runs `core` on the JVM against sqlite-jdbc with a small HTTP server, so the
   phone code path can be exercised and compared with the Python backend without a device:
   `gradle -p android :harness:installDist`, then
