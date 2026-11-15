@@ -2870,21 +2870,27 @@ async function rvDay(el, day, worst) {
       r.against ? `Against the schedule: ${mwc(r.against)}${r.over ? ' (over the 300 MW limit)' : ''}` : 'With the schedule (not limited)',
       r.flipped ? 'NESO reversed the flow' : '']);
   };
-  const barCol = (r) => (r.over ? css('--critical') : r.against ? css('--s4') : css('--other'));
+  // NESO's trades as three overlapping bar series (one per colour) so each colour gets its own legend entry.
+  const kind = (r) => (r.over ? 'over' : r.against ? 'against' : 'with');
+  const tradeBars = (name, k, col) => ({ name, type: 'bar', color: col, barWidth: '55%', barMaxWidth: 26, barGap: '-100%',
+    data: rows.map((r) => (kind(r) === k ? r.neso : null)) });
+  const kinds = new Set(rows.filter((r) => r.neso).map(kind));
+  const trades = [['NESO trades with the schedule', 'with', css('--other')], ['NESO trades against it', 'against', css('--s4')],
+    ['Over 300 MW against', 'over', css('--critical')]].filter(([, k]) => kinds.has(k));
   o.series = [
-    { name: 'NESO net trades', type: 'bar', color: css('--s4'), barWidth: '55%', barMaxWidth: 26, barGap: '-100%', data: rows.map((r) => ({ value: r.neso, itemStyle: { color: barCol(r) } })),
+    ...trades.map(([n, k, c]) => tradeBars(n, k, c)),
+    { name: 'Flowed', type: 'line', step: 'middle', symbol: 'none', lineStyle: { width: 2.5 }, color: css(IC[ic]?.col || '--s1'), data: rows.map((r) => r.flow),
       markLine: limited ? { silent: true, symbol: 'none', lineStyle: { color: css('--critical'), type: 'dotted' }, label: { formatter: '{b}', position: 'insideEndTop', color: css('--muted'), fontSize: 10 },
         data: [{ yAxis: rules.link_cap, name: '+300 MW' }, { yAxis: -rules.link_cap, name: '−300 MW' }] } : undefined },
-    { name: 'Flowed', type: 'line', step: 'middle', symbol: 'none', lineStyle: { width: 2.5 }, color: css(IC[ic]?.col || '--s1'), data: rows.map((r) => r.flow) },
-    { name: 'Without NESO (schedule)', type: 'line', step: 'middle', symbol: 'none', lineStyle: { width: 2, type: 'dashed' }, color: css('--ink2'), data: rows.map((r) => r.pre),
-    },
+    { name: 'Without NESO (schedule)', type: 'line', step: 'middle', symbol: 'none', lineStyle: { width: 2, type: 'dashed' }, color: css('--ink2'), data: rows.map((r) => r.pre) },
   ];
   // Reversed hours: a pale full-height band behind the bars (a markArea has no width on a single category).
   const top = Math.max(1, ...rows.flatMap((r) => [Math.abs(r.flow), Math.abs(r.pre), Math.abs(r.neso)])) * 1.05;
-  const band = (sign) => ({ name: 'Reversed', type: 'bar', silent: true, barWidth: '100%', barGap: '-100%', z: 0, tooltip: { show: false },
-    itemStyle: { color: 'rgba(237, 161, 0, 0.18)' }, data: rows.map((r) => (r.flipped ? sign * top : null)) });
+  const bandCol = 'rgba(237, 161, 0, 0.18)';
+  const band = (sign) => ({ name: 'NESO reversed the flow', type: 'bar', silent: true, barWidth: '100%', barGap: '-100%', z: 0, tooltip: { show: false },
+    color: bandCol, itemStyle: { color: bandCol }, data: rows.map((r) => (r.flipped ? sign * top : null)) });
   if (nFlip) o.series.unshift(band(1), band(-1));
-  o.legend.data = ['NESO net trades', 'Flowed', 'Without NESO (schedule)'];
+  o.legend.data = [...trades.map(([n]) => n), 'Flowed', 'Without NESO (schedule)', ...(nFlip ? ['NESO reversed the flow'] : [])];
   chart(el).setOption(o, true);
 }
 
