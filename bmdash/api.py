@@ -397,6 +397,15 @@ def remit_outages(t: str, start: date = Query(alias="from"), end: date = Query(a
     return {"rows": remit.outages(start, end, _kind(kind), bucket, t, long)}
 
 
+@app.get("/api/remit/message")
+def remit_message(mrid: str):
+    """One outage message with its profile through the event, and the same unit's other REMIT messages."""
+    m = remit.message(mrid)
+    if m is None:
+        raise HTTPException(404, "no such message")
+    return m
+
+
 # ---------------------------------------------------------------- interconnector balancing (see interconnectors.py)
 
 # One row of ic_trade is one settlement period x link x counterparty x kind x SO flag x direction (positive volume:

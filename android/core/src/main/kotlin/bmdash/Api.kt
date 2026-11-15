@@ -48,6 +48,7 @@ class Api(private val db: SqlDb, private val control: IngestControl, private val
         r == "remit/meta" -> Remit.meta(db, costs?.running ?: false, costs?.status()?.get("error") as? String ?: "")
         r == "remit/agg" -> { checkBucket(p); Remit.aggregate(db, LocalDate.parse(date(p, "from")), LocalDate.parse(date(p, "to")), kind(p), p["bucket"] ?: "day", bool(p, "long")) }
         r == "remit/outages" -> { checkBucket(p); mapOf("rows" to Remit.outages(db, LocalDate.parse(date(p, "from")), LocalDate.parse(date(p, "to")), kind(p), p["bucket"] ?: "day", req(p, "t"), bool(p, "long"))) }
+        r == "remit/message" -> Remit.message(db, req(p, "mrid")) ?: throw HttpError(404, "no such message")
         r == "ic/meta" -> Interconnectors.meta(db, (costs?.status() ?: emptyMap()))
         r == "ic/agg" -> Interconnectors.agg(db, Interconnectors.Filter(p, date(p, "from"), date(p, "to"), BUCKETS),
             BUCKETS[p["bucket"] ?: "day"] ?: throw HttpError(400, "bad bucket or group"), p["group"] ?: "none", (p["top"] ?: "8").toInt(), p["rank"] ?: "cash")

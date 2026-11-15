@@ -405,6 +405,29 @@ def outages(start: date, end: date, kind: str, bucket: str, t, long_term: bool =
     return out
 
 
+def _msg_out(m: dict) -> dict:
+    return {"mrid": m["mrid"], "msg_id": m["msg_id"], "revision": m["revision"], "published": _iso(m["published"]) if m["published"] else None,
+            "kind": m["kind"], "planned": m["planned"], "status": m["status"], "asset": m["asset_id"], "name": m["unit_name"],
+            "fuel": m["fuel"], "gsp": m["gsp_group"] or "Unknown", "normal_mw": m["normal_mw"], "available_mw": m["available_mw"],
+            "unavailable_mw": m["unavailable_mw"], "start": _iso(m["t_start"]), "end": _iso(m["t_end"]), "cause": m["cause"],
+            "participant": m["participant"]}
+
+
+def message(mrid: str, others: int = 100) -> dict | None:
+    """One outage message (latest revision) with its profile, plus the unit's other messages, newest event first.
+
+    profile: [{start, end, mw}] where mw is the unavailable MW in that step (normal capacity minus the available)."""
+    m, s = read()
+    rows = [dict(zip(MSG_SCHEMA.names, r)) for r in zip(*(m[c].to_pylist() for c in MSG_SCHEMA.names))]
+    msg = next((r for r in rows if r["mrid"] == mrid), None)
+    if msg is None:
+        return None
+    segs = sorted((t0, t1, mw) for mid, t0, t1, mw in zip(*(s[c].to_pylist() for c in SEG_SCHEMA.names)) if mid == mrid)
+    same = sorted((r for r in rows if r["asset_id"] == msg["asset_id"] and r["kind"] == msg["kind"]), key=lambda r: (-r["t_start"], -r["published"]))
+    return {**_msg_out(msg), "profile": [{"start": _iso(a), "end": _iso(b), "mw": v} for a, b, v in segs],
+            "others": [_msg_out(r) for r in same[:others]], "n_others": len(same)}
+
+
 def extent() -> dict:
     """Date range the REMIT tab offers: from the first fetched day to AHEAD days from today."""
     meta = status()

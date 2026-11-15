@@ -313,6 +313,24 @@ object Remit {
         return out.sortedByDescending { it["mw"] as Double }
     }
 
+    private fun msgOut(m: Map<String, Any?>): Map<String, Any?> = linkedMapOf(
+        "mrid" to m["mrid"], "msg_id" to m["msg_id"], "revision" to m["revision"],
+        "published" to (m["published"] as Number?)?.toLong()?.takeIf { it != 0L }?.let { iso(it) },
+        "kind" to m["kind"], "planned" to truthy(m["planned"]), "status" to m["status"], "asset" to m["asset_id"], "name" to m["unit_name"],
+        "fuel" to m["fuel"], "gsp" to (m["gsp_group"] ?: "Unknown"), "normal_mw" to m["normal_mw"], "available_mw" to m["available_mw"],
+        "unavailable_mw" to m["unavailable_mw"], "start" to iso((m["t_start"] as Number).toLong()), "end" to iso((m["t_end"] as Number).toLong()),
+        "cause" to m["cause"], "participant" to m["participant"])
+
+    /** One outage message with its profile (unavailable MW per step), plus the unit's other messages, newest event first. */
+    fun message(db: SqlDb, mrid: String, others: Int = 100): Map<String, Any?>? {
+        val m = db.query("SELECT * FROM remit_msg WHERE mrid = ?", listOf(mrid)).firstOrNull() ?: return null
+        val profile = db.query("SELECT t0, t1, mw FROM remit_seg WHERE mrid = ? ORDER BY t0, t1", listOf(mrid)).map {
+            linkedMapOf("start" to iso((it["t0"] as Number).toLong()), "end" to iso((it["t1"] as Number).toLong()), "mw" to it["mw"])
+        }
+        val same = db.query("SELECT * FROM remit_msg WHERE asset_id = ? AND kind = ? ORDER BY t_start DESC, published DESC", listOf(m["asset_id"], m["kind"]))
+        return msgOut(m) + linkedMapOf("profile" to profile, "others" to same.take(others).map { msgOut(it) }, "n_others" to same.size)
+    }
+
     fun extent(db: SqlDb): Map<String, Any?> {
         val m = meta(db)
         if (m["published_to"] == null) return linkedMapOf("min" to null, "max" to null)

@@ -88,6 +88,8 @@ th { position: sticky; top: 0; background: var(--surface); color: var(--ink2); f
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 tbody tr.click { cursor: pointer; }
 tbody tr.click:hover { background: var(--wash); }
+#rDetail { scroll-margin-top: 170px; }
+tbody tr.sel, tbody tr.sel:hover { background: var(--wash); box-shadow: inset 3px 0 0 var(--s1); }
 td.wrap { white-space: normal; min-width: 150px; }
 .tag { display: inline-flex; align-items: center; gap: 6px; }
 .dot { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
