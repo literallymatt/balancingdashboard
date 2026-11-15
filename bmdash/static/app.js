@@ -3745,6 +3745,144 @@ function drawFilterBar() {
   }
 }
 
+// ---------- Data sources footer ----------
+// Every tab ends with where its numbers come from: a one-line summary, and a click-to-expand explanation.
+const ELX = (code, label = code) => `<a href="https://bmrs.elexon.co.uk/api-documentation/endpoint/datasets/${code}" target="_blank" rel="noopener">${label}</a>`;
+const NESO_DP = (pkg, label) => `<a href="https://www.neso.energy/data-portal/${pkg}" target="_blank" rel="noopener">${label}</a>`;
+const ELEXON_API = '<a href="https://bmrs.elexon.co.uk/api-documentation" target="_blank" rel="noopener">Elexon Insights Solution (BMRS) API</a>';
+const BM_SOURCES = `
+  <h3>Sources</h3>
+  <ul>
+    <li>${ELEXON_API}: indicative settlement volumes and cashflows per BM unit, settlement period, direction and bid-offer pair (whole-day <code>balancing/settlement/indicative</code> endpoints, the ${ELX('DISPTAV')} and ${ELX('EBOCF')} data).</li>
+    <li>${ELX('BOALF')} acceptances: used to derive each unit-period's SO flag and acceptance count.</li>
+    <li>${ELX('DISEBSP')} system prices: the imbalance price and net imbalance volume.</li>
+    <li>${ELX('DISBSAD')}: balancing actions taken outside the BM (trades, non-BM reserve).</li>
+    <li>Elexon BM unit reference data: names, lead parties and fuel types.</li>
+  </ul>`;
+const BM_NOTES = `
+  <h3>How the figures are built</h3>
+  <ul>
+    <li>Net cost is offer cashflow plus bid cashflow (bid cashflow is negative when a unit pays NESO).</li>
+    <li>Accepted volume takes the larger of Elexon's "Original" and "Tagged" series, because Original is zero for SO-flagged actions; it reconciles with the DISEBSP total accepted volume to within about 0.1%.</li>
+    <li>The SO flag is approximate: a unit-period counts as flagged when any acceptance covering it carries the BOALF SO flag.</li>
+    <li>Technology is Elexon's fuel type where given; batteries are inferred from the unit name, and anything else is "Other".</li>
+    <li>Figures are indicative until Elexon's data settles: days fetched within 5 days of the settlement date are re-fetched later. Times are GB local (settlement) time.</li>
+  </ul>
+  <h3>Updating</h3>
+  <p>The Data tab (or <code>bmdash ingest</code>) fetches more days; days already held and settled are skipped.</p>`;
+const SHARED_REFRESH = '<h3>Updating</h3><p>Refreshed together with the Total costs data: the Refresh data button, <code>bmdash costs</code>, or the end of <code>bmdash ingest</code>.</p>';
+
+const SOURCES = {
+  overview: ['Elexon BMRS: BM settlement cashflows and volumes, BOALF acceptances, DISEBSP system prices, DISBSAD', BM_SOURCES + BM_NOTES],
+  units: ['Elexon BMRS: BM settlement cashflows and volumes, BOALF acceptances, BM unit reference data', BM_SOURCES + BM_NOTES],
+  unit: ['Elexon BMRS: BM settlement data, plus live PN, MEL/MIL, bid-offer prices and acceptances for the unit', `${BM_SOURCES}
+    <h3>Unit day detail</h3>
+    <ul>
+      <li>Physical notifications and export/import limits (${ELX('PN')}, ${ELX('MELS')}, ${ELX('MILS')}) and the unit's bid-offer prices (${ELX('BOD')}) are fetched live from Elexon for the day shown, and cached once the day has settled.</li>
+      <li>Acceptances (${ELX('BOALF')}) for the unit are fetched live too (not stored), and the instruction replay follows the newest-issued acceptance covering each moment, or the unit's own plan where none does. Checked against Elexon's settled volumes on 9 unit-days to within 0.1 MWh.</li>
+    </ul>${BM_NOTES}`],
+  costs: ['NESO Data Portal: daily balancing costs and EAC auction results; Elexon DISBSAD', `
+    <h3>Sources</h3>
+    <ul>
+      <li>${NESO_DP('daily-balancing-costs-balancing-services-use-of-system', 'NESO Daily Balancing Costs (BSUoS)')}: NESO's daily cost total and its split by purpose (constraints, energy imbalance, reserve, frequency control, other).</li>
+      <li>${NESO_DP('eac-auction-results', 'NESO EAC auction results')}: response and reserve availability costs (read through the portal's SQL endpoint).</li>
+      <li>${ELX('DISBSAD')}: non-BM balancing actions.</li>
+    </ul>
+    <h3>How the figures are built</h3>
+    <ul>
+      <li>BM cost is NESO's daily total minus BSAD; on every complete day this matched Elexon's unit-level BM cashflows to within £0.4M (about 1%).</li>
+      <li>EAC reserve products are half-hour windows and response products four-hour windows, so cost = price × MW × hours per product.</li>
+      <li>NESO publishes the daily file a few days late: a day counts once it has 44 or more settlement periods, and the latest month is marked partial.</li>
+      <li><b>Not included</b> (no public monthly actuals): other ancillary services (reactive, black start, stability, reserve delivery), SO-SO trades and reconciliation.</li>
+    </ul>${SHARED_REFRESH}`],
+  constraints: ['NESO Data Portal: day-ahead constraint flows and limits, thermal constraint costs, constraint breakdown', `
+    <h3>Sources</h3>
+    <ul>
+      <li>${NESO_DP('day-ahead-constraint-flows-and-limits', 'NESO Day-Ahead Constraint Flows and Limits')}: per boundary and half-hour, the limit and the flow NESO forecast across it the day before.</li>
+      <li>${NESO_DP('thermal-constraint-costs', 'NESO Thermal Constraint Costs')}: daily costs by boundary group.</li>
+      <li>${NESO_DP('constraint-breakdown', 'NESO Constraint Breakdown')}: daily costs by reason (thermal, voltage, inertia, largest loss).</li>
+      <li>Map outline: Natural Earth (public domain).</li>
+    </ul>
+    <h3>How the figures are built</h3>
+    <ul>
+      <li>A half-hour counts as "at the limit" when the forecast flow is at or above the limit. These are day-ahead forecasts, not metered flows.</li>
+      <li>NESO renames boundaries as the network changes (SSE_SP became SSE_SP2), so codes are grouped into families for the map and costs. Boundary positions are schematic, drawn from NESO's network diagrams.</li>
+      <li>Costs are published per day only, so they show per day at finer granularities.</li>
+      <li>Days NESO published twice are de-duplicated, except the repeated hour at the autumn clock change.</li>
+    </ul>${SHARED_REFRESH}`],
+  remit: ['Elexon BMRS: REMIT outage messages; NESO GB DNO licence areas (map)', `
+    <h3>Sources</h3>
+    <ul>
+      <li>${ELEXON_API}: REMIT messages (<code>remit/list</code> and <code>remit</code>), which owners must publish for any change in availability of 100 MW or more.</li>
+      <li>Elexon BM unit reference data: GSP group and transmission loss factor per unit.</li>
+      <li>Region outlines: NESO's GB DNO licence areas (NESO Open Data Licence), simplified.</li>
+    </ul>
+    <h3>How the figures are built</h3>
+    <ul>
+      <li>Only each message's latest revision counts, and withdrawn ("Dismissed") messages are ignored.</li>
+      <li>Unavailable MW is the unit's normal capacity minus the outage profile's available capacity (or the message's own unavailable capacity when there is no profile), averaged over each half-hour; overlapping live messages for one unit count once (the larger).</li>
+      <li>Events longer than a year are hidden unless <i>Closures</i> is ticked: closed and mothballed stations stay in REMIT as open-ended outages.</li>
+      <li>Elexon gives a GSP group for embedded units only; transmission-connected units are placed by their transmission loss factor, which Elexon sets per GSP-group zone.</li>
+      <li>Planned outages are published in advance, so the tab reaches 28 days ahead.</li>
+    </ul>${SHARED_REFRESH}`],
+  interconnectors: ['Elexon BMRS: DISBSAD interconnector trades, FUELHH physical flows', `
+    <h3>Sources</h3>
+    <ul>
+      <li>${ELX('DISBSAD')}: NESO's trades on the interconnectors, which sit outside the Balancing Mechanism. Counterparty trades carry the trader's interconnector unit as the asset id (its prefix names the link); SO-SO trades are with the neighbouring system operator.</li>
+      <li>${ELX('FUELHH')}: half-hourly physical flow per link (positive into GB).</li>
+      <li>Map outline: Natural Earth (public domain); landing points are approximate.</li>
+    </ul>
+    <h3>How the figures are built</h3>
+    <ul>
+      <li>Positive volume is energy NESO bought (into GB). SO-SO trades are often published without a cost, so they count in volumes but not in average prices.</li>
+      <li>Trades are pay-as-bid. Average price is cost / volume; the clearing price is the marginal trade in each half-hour (the dearest NESO bought, the cheapest it sold), averaged over the half-hours with trades.</li>
+      <li>Trades are stored summed per settlement period, link, counterparty, kind, SO flag and direction, keeping each row's highest and lowest single-trade price.</li>
+    </ul>${SHARED_REFRESH}`],
+  icrev: ['Derived from the Interconnectors tab data (Elexon DISBSAD trades and FUELHH flows); NESO market notice of 14 May 2026', `
+    <h3>Sources</h3>
+    <ul>
+      <li>${ELX('DISBSAD')} (NESO's interconnector trades) and ${ELX('FUELHH')} (metered flow), as stored for the Interconnectors tab; nothing extra is downloaded.</li>
+      <li>The limits come from NESO's market notice <i>Interconnector trading restrictions for NESO</i> (14 May 2026): from 20 May 2026 to the end of 2026, at most 1,500 MW per hour within day against the day-ahead schedule across IFA, IFA2, ElecLink, Viking Link, BritNed and Nemo Link, and at most 300 MW on any one of them.</li>
+    </ul>
+    <h3>How the figures are built</h3>
+    <ul>
+      <li>Elexon does not publish the day-ahead schedule, so it is estimated per link and clock hour as the metered flow minus NESO's net trades. The estimate also includes intraday market trades.</li>
+      <li>A link was <i>reversed</i> when the estimate and the metered flow point opposite ways, each by at least 50 MW. A counterparty trade is <i>against the schedule</i> when it points the other way to the estimate; SO-SO trades do not count towards the limit.</li>
+      <li>A link-hour is over the limit above 300 MW (1 MW allowed for rounding); an hour above 1,500 MW across the six links.</li>
+      <li>The hourly volumes match NESO's own interconnector auction results, but because the schedule is estimated, breaches are best read as likely rather than certain.</li>
+    </ul>${SHARED_REFRESH}`],
+  dfs: ['NESO Data Portal: Demand Flexibility Service utilisation reports and service requirements; Elexon MID market prices', `
+    <h3>Sources</h3>
+    <ul>
+      <li>${NESO_DP('demand-flexibility', 'NESO Demand Flexibility Service')}: the <i>DFS Utilisation Report Summary</i> (per event half-hour: requirement, MW procured, accepted cost, settled volume and cost), the <i>DFS Utilisation Report</i> (every bid: provider, DFS unit, zone, MW, price, accepted or rejected) and the <i>DFS Service Requirement</i> (guaranteed acceptance price and zone caps), for the current year and the 2025/26 archive.</li>
+      <li>${ELX('MID')}: Elexon's market index price (APX) for each event half-hour.</li>
+      <li>Zone outlines: NESO's DFS 12-zone GeoJSON (February 2026), simplified; area names are approximate.</li>
+    </ul>
+    <h3>How the figures are built</h3>
+    <ul>
+      <li>Bids are paid their own price and accepted cheapest first, so a half-hour's clearing price is its highest accepted bid; over several half-hours it is averaged weighted by volume procured.</li>
+      <li>Accepted bids add up exactly to NESO's procured MW and cost for every half-hour checked (3,130 event half-hours).</li>
+      <li>The archive has no event numbers, types or tags, so its events are named by date with the reason "Not stated"; zones start in April 2026. Provider names are normalised because NESO spells some differently between files. Test events are left out unless ticked.</li>
+    </ul>${SHARED_REFRESH}`],
+  data: ['Elexon Insights Solution (BMRS) API', `
+    <h3>Sources</h3>
+    <p>This tab fetches Balancing Mechanism data from the ${ELEXON_API}: about seven requests per settlement day (indicative volumes and cashflows for bids and offers, ${ELX('BOALF')} acceptances, ${ELX('DISEBSP')} system prices and ${ELX('DISBSAD')}). Each dataset is stored as one file per settlement day.</p>
+    <h3>Other tabs</h3>
+    <p>The Total costs, Constraints, REMIT, Interconnectors, IC reversals and DFS tabs have their own sources (NESO Data Portal and other Elexon datasets), listed at the bottom of each tab and updated with their Refresh data button.</p>`],
+};
+
+let sourcesFor = null;
+function drawSources() {
+  const el = $('#sources');
+  if (!el) return;
+  const v = state.view in SOURCES ? state.view : 'overview';
+  if (v === sourcesFor) return; // keep it open or closed while the same tab re-renders
+  sourcesFor = v;
+  const [summary, body] = SOURCES[v];
+  el.innerHTML = `<details class="sources-box"><summary><span class="sources-label">Data sources</span> <span class="sources-sum"></span> <span class="sources-more">How this data is sourced</span></summary><div class="sources-body">${body}</div></details>`;
+  el.querySelector('.sources-sum').textContent = summary;
+}
+
 let lastPage = null;
 async function render() {
   readHash();
@@ -3764,6 +3902,7 @@ async function render() {
   if (!noFilters) drawFilterBar();
   drawZoomTrail();
   drawCoverage();
+  drawSources();
   const page = state.view === 'unit' ? `unit/${state.unit}` : state.view;
   if (page !== lastPage && lastPage != null && !pendingReveal) scrollTo(0, 0);  // a new page starts at its top
   lastPage = page;

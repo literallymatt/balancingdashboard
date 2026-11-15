@@ -63,7 +63,27 @@ button.btn:disabled { opacity: .5; cursor: default; }
 .zoom-trail .crumbs .sep { color: var(--muted); }
 .zoom-trail .crumbs b { color: var(--ink); font-weight: 600; }
 
-main { padding: 16px 20px 60px; max-width: 1700px; margin: 0 auto; }
+main { padding: 16px 20px 20px; max-width: 1700px; margin: 0 auto; }
+
+/* Data sources: a short line at the foot of every tab, click for the full explanation. */
+.sources { max-width: 1700px; margin: 0 auto; padding: 0 20px 48px; }
+.sources-box { border-top: 1px solid var(--border); padding-top: 10px; font-size: 12px; color: var(--ink2); }
+.sources-box summary { cursor: pointer; list-style: none; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+.sources-box summary::-webkit-details-marker { display: none; }
+.sources-box summary::before { content: "\25B8"; color: var(--muted); transition: transform .15s; }
+.sources-box[open] summary::before { transform: rotate(90deg); }
+.sources-label { font-weight: 600; color: var(--ink); }
+.sources-sum { color: var(--muted); }
+.sources-more { color: var(--s1); margin-left: auto; }
+.sources-box summary:hover .sources-more { text-decoration: underline; }
+.sources-box[open] .sources-more::after { content: " (hide)"; }
+.sources-body { max-width: 900px; margin-top: 8px; line-height: 1.55; }
+.sources-body h3 { font-size: 12px; font-weight: 650; color: var(--ink); margin: 12px 0 4px; }
+.sources-body ul { margin: 0; padding-left: 18px; }
+.sources-body li + li { margin-top: 3px; }
+.sources-body p { margin: 0; }
+.sources-body a { color: var(--s1); }
+.sources-body code { font-size: 11px; background: var(--wash); padding: 0 4px; border-radius: 4px; }
 .grid { display: grid; gap: 14px; }
 .kpis { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); margin-bottom: 14px; }
 .cols2 { grid-template-columns: repeat(auto-fit, minmax(480px, 1fr)); margin-top: 14px; }
@@ -132,7 +152,9 @@ td.wrap { white-space: normal; min-width: 150px; }
   .filters label { display: flex; align-items: center; gap: 4px; }
   input[type=date] { padding: 6px 6px; max-width: 150px; }
   select, input { padding: 6px 8px; }
-  main { padding: 10px 10px 48px; }
+  main { padding: 10px 10px 16px; }
+  .sources { padding: 0 10px 40px; }
+  .sources-more { margin-left: 0; }
   .grid { gap: 10px; }
   .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-bottom: 10px; }
   .cols2 { grid-template-columns: minmax(0, 1fr); margin-top: 10px; }
