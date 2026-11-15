@@ -1,4 +1,4 @@
-/* GB Balancing Mechanism dashboard. Vanilla JS + ECharts; all state lives in the URL hash. */
+/* GB Grid Operations dashboard. Vanilla JS + ECharts; all state lives in the URL hash. */
 
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -3958,7 +3958,7 @@ async function viewData(main) {
   $('#dbgCopy').onclick = async () => {
     if (!last) return;
     const l = last.latest || {};
-    const head = `GB Balancing debug log. cores=${l.cores} thermal=${l.thermal_name} charging=${l.charging} interval=${last.interval_ms}ms`;
+    const head = `GB Grid Operations debug log. cores=${l.cores} thermal=${l.thermal_name} charging=${l.charging} interval=${last.interval_ms}ms`;
     const cols = ['time', 'cpu_pct', 'batt_temp_c', 'headroom', 'thermal_status', 'watts', 'batt_ma', 'rx_mb', 'heap_used_mb', 'ingest_running', 'ingest_done', 'ingest_total'];
     const rows = (last.history || []).map((r) => [hhmmss(r.t), ...cols.slice(1).map((c) => (r[c] == null ? '' : typeof r[c] === 'number' ? +r[c].toFixed(2) : r[c]))].join(','));
     const threads = (last.threads || []).map((t) => `${t.name} ${nf(0).format(t.cpu_pct)}%`).join('; ');
