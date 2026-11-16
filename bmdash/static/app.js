@@ -2772,8 +2772,8 @@ async function viewReversals(main) {
   await loading($('#rvDay'), () => rvDay($('#rvDay'), day, worst));
 }
 
-/** Day x clock-hour grid coloured by the MW NESO traded against the schedule across the six links; a dot marks an hour
- *  with a link over 300 MW. Click a cell to show that day below. */
+/** Day x clock-hour grid coloured by the MW NESO traded against the schedule across the six links; one dot per link over
+ *  300 MW in that hour. Click a cell to show that day below. */
 function rvHeat(el, data, day, onPick) {
   const rules = data.rules;
   const ds = [];
@@ -2781,8 +2781,19 @@ function rvHeat(el, data, day, onPick) {
   if (ds.length > 400) { el.innerHTML = '<div class="empty">Narrow the range to 400 days or fewer to see the hourly grid.</div>'; charts.delete(el); return; }
   const di = new Map(ds.map((d, i) => [d, i]));
   const pts = data.hours.filter((h) => di.has(h.d) && h.against > 0).map((h) => ({ value: [di.get(h.d), Math.min(h.hour, 23), h.against], h }));
-  const dots = data.hours.filter((h) => di.has(h.d) && h.n_over).map((h) => ({ value: [di.get(h.d), Math.min(h.hour, 23)], h }));
-  $('#rvHeatNote').textContent = `Each cell is one hour: the MW NESO traded against the estimated day-ahead direction across the six continental links. Darker red goes over the 1,500 MW total; a dot marks an hour with at least one link over 300 MW. The limit applies from ${fmtDay(rules.from)}. Click an hour to see that day below.`;
+  // One dot per link over 300 MW in that hour, packed into the cell: side by side while they fit, then in rows.
+  const dotSize = ds.length > 120 ? 3 : ds.length > 45 ? 4 : 6;
+  const cellW = Math.max(1, (el.clientWidth || 800) - 70) / ds.length, cellH = Math.max(1, (el.clientHeight || 420) - 56) / 24;
+  const dots = data.hours.filter((h) => di.has(h.d) && h.n_over).flatMap((h) => {
+    const n = h.n_over, step = dotSize + 1;
+    const cols = Math.min(n, Math.max(Math.floor((cellW - 2) / step), Math.ceil(n / Math.max(1, Math.floor((cellH - 2) / step))), 1));
+    const rows = Math.ceil(n / cols);
+    return Array.from({ length: n }, (_, i) => {
+      const r = Math.floor(i / cols), inRow = r === rows - 1 ? n - r * cols : cols, c = i % cols;
+      return { value: [di.get(h.d), Math.min(h.hour, 23)], h, symbolOffset: [(c - (inRow - 1) / 2) * step, (r - (rows - 1) / 2) * step] };
+    });
+  });
+  $('#rvHeatNote').textContent = `Each cell is one hour: the MW NESO traded against the estimated day-ahead direction across the six continental links. Darker red goes over the 1,500 MW total; each dot is one link over 300 MW in that hour. The limit applies from ${fmtDay(rules.from)}. Click an hour to see that day below.`;
   if (!pts.length && !dots.length) { el.innerHTML = '<div class="empty">NESO did not trade against the schedule in this range.</div>'; charts.delete(el); return; }
   const o = baseOption();
   o.legend.show = false;
@@ -2809,7 +2820,7 @@ function rvHeat(el, data, day, onPick) {
       markLine: { silent: true, symbol: 'none', label: { show: true, formatter: '{b}', color: css('--ink2'), fontSize: 11, position: 'insideEndTop' },
         data: [...(start != null && start > 0 ? [{ xAxis: start, name: 'Limit starts', lineStyle: { color: css('--ink2'), type: 'dashed' } }] : []),
           ...(sel != null ? [{ xAxis: sel, name: '', lineStyle: { color: css('--ink'), width: 1, type: 'dotted' } }] : [])] } },
-    { type: 'scatter', data: dots, symbolSize: ds.length > 120 ? 3 : ds.length > 45 ? 4 : 6, itemStyle: { color: css('--ink') }, z: 3 },
+    { type: 'scatter', data: dots, symbolSize: dotSize, itemStyle: { color: css('--ink') }, z: 3 },
   ];
   const c = chart(el);
   c.setOption(o, true);
@@ -2833,7 +2844,12 @@ async function rvDay(el, day, worst) {
   const links = IC_ORDER.filter((k) => byIc.has(k));
   const ic = state.rvic && byIc.has(state.rvic) ? state.rvic : [...links].sort((a, b) => score(b) - score(a))[0];
   const sel = $('#rvic');
-  sel.innerHTML = links.map((k) => `<option value="${k}" ${k === ic ? 'selected' : ''}>${esc(icName(k))}${rules.links.includes(k) ? '' : ' (not limited)'}</option>`).join('');
+  // One dot per hour the link was over 300 MW that day (as in the grid above), so the links that broke the limit stand out.
+  const overDots = (k) => {
+    const n = (byIc.get(k) || []).filter((r) => r.over).length;
+    return n ? `  ${'●'.repeat(Math.min(n, 8))}${n > 8 ? '+' : ''} ${n} h over 300 MW` : '';
+  };
+  sel.innerHTML = links.map((k) => `<option value="${k}" ${k === ic ? 'selected' : ''}>${esc(icName(k))}${rules.links.includes(k) ? '' : ' (not limited)'}${overDots(k)}</option>`).join('');
   sel.onchange = (e) => update({ rvic: e.target.value, rvd: day }, true);
   if (!ic) { el.innerHTML = '<div class="empty">No flow data for this day.</div>'; charts.delete(el); return; }
   const rows = byIc.get(ic).sort((a, b) => a.hour - b.hour);
