@@ -9,7 +9,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -921,9 +921,29 @@ def ingest_status():
 
 # ---------------------------------------------------------------- static app
 
+class _RevalidatedStatic(StaticFiles):
+    """Static files that the browser must re-check (a cheap 304 when unchanged) before each use. Without this,
+    browsers cache app.js by heuristic and can keep running an old copy against a newer index.html."""
+
+    async def get_response(self, path, scope):
+        resp = await super().get_response(path, scope)
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
+
+
+def _versioned(html: str) -> str:
+    """Tag the app's own script and stylesheet with their modification time, so a copy the browser already
+    cached under the bare URL (before the no-cache header existed) is never used."""
+    for name in ("app.js", "style.css"):
+        v = int((STATIC / name).stat().st_mtime)
+        html = html.replace(f'/static/{name}"', f'/static/{name}?v={v}"')
+    return html
+
+
 @app.get("/")
 def index():
-    return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-store"})
+    html = _versioned((STATIC / "index.html").read_text(encoding="utf-8"))
+    return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
 
 @app.exception_handler(Exception)
@@ -931,4 +951,4 @@ async def on_error(_, exc: Exception):
     return JSONResponse({"detail": str(exc)}, status_code=500)
 
 
-app.mount("/static", StaticFiles(directory=STATIC), name="static")
+app.mount("/static", _RevalidatedStatic(directory=STATIC), name="static")
