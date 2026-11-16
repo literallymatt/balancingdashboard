@@ -259,7 +259,7 @@ class Job:
 
 
 async def run(a: date, b: date, *, force: bool = False, concurrency: int = 16,
-              parallel_days: int = 4, job: Job | None = None, on_day=None) -> Job:
+              parallel_days: int = 8, job: Job | None = None, on_day=None) -> Job:
     job = job or Job()
     job.__dict__.update(start=a.isoformat(), end=b.isoformat(), running=True, done=0, failed=[],
                         rows=0, requests=0, error="", started_at=time.time(), finished_at=0.0, last="")

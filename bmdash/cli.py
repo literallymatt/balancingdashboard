@@ -18,7 +18,7 @@ def main() -> None:
     i.add_argument("--days", type=int, default=30, help="days back from --to when --from is omitted")
     i.add_argument("--force", action="store_true", help="re-fetch days already held")
     i.add_argument("--concurrency", type=int, default=16, help="simultaneous HTTP requests")
-    i.add_argument("--parallel-days", type=int, default=4)
+    i.add_argument("--parallel-days", type=int, default=8, help="settlement days fetched at once (each holds about 30 MB of JSON while it is parsed)")
 
     c = sub.add_parser("costs", help="fetch system-level balancing costs (NESO, Elexon BSAD, EAC), network constraint data, REMIT outage messages, interconnector trades and flows and Demand Flexibility Service events for the Total costs, Constraints, REMIT, Interconnectors and DFS tabs")
     c.add_argument("--from", dest="start", help="first date (default: incremental -- recent days only once data is held, else 2025-04-01)")
