@@ -20,8 +20,10 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 
 import httpx
@@ -50,16 +52,25 @@ SCHEMA = pa.schema([("date", pa.date32()), ("source", pa.string()), ("category",
 META = store.DATA / "cost_meta.json"
 
 
+def _timeout(attempt: int) -> httpx.Timeout:
+    """Read timeout for a retry: short at first, because a hung request (no bytes at all) is far more common than a
+    genuinely slow one and the same request sent again usually answers in seconds; doubled on each retry."""
+    return httpx.Timeout(min(120.0, 20.0 * 2**attempt), connect=10.0)
+
+
 def _get(client: httpx.Client, url: str, params: dict | None = None) -> dict | list:
     last: Exception | None = None
     for attempt in range(5):
         try:
-            r = client.get(url, params=params, timeout=120)
+            r = client.get(url, params=params, timeout=_timeout(attempt))
             if r.status_code == 200:
                 return r.json()
             if r.status_code not in (429, 500, 502, 503, 504):
                 raise RuntimeError(f"{url} -> HTTP {r.status_code}: {r.text[:120]}")
             last = RuntimeError(f"HTTP {r.status_code}")
+        except httpx.TimeoutException as e:  # hung: retry at once with a longer timeout (see elexon.Elexon)
+            last = e
+            continue
         except httpx.HTTPError as e:
             last = e
         time.sleep(min(20.0, 1.0 * 2 ** attempt))
@@ -207,58 +218,69 @@ def ingest_costs(start: date | None = None, end: date | None = None, log=print) 
     ic_start = start if interconnectors.held() else min(start, DEFAULT_START)
     ic_sink = interconnectors.TradeSink()
     errors, new, windows = [], [], {}
-    with httpx.Client(headers={"User-Agent": "bmdash/0.1"}, follow_redirects=True) as client:
-        for name, fn, a in (("neso_purpose", fetch_purpose, start), ("eac", fetch_eac, start),
-                            ("bsad", lambda c, s, e: fetch_bsad(c, s, e, ic_sink), ic_start),
-                            ("thermal", constraints.fetch_thermal, start), ("constraint_type", constraints.fetch_types, start)):
-            try:
-                log(f"  {name}: fetching {a} .. {end}", flush=True) if log is print else log(f"  {name}: fetching")
-                got = fn(client, a, end)
-                log(f"  {name}: {len(got)} rows")
-                new += got
-                windows[name] = a
-            except Exception as e:  # a failing source must not discard the others
-                errors.append(f"{name}: {e}")
-                log(f"  {name}: FAILED {e}")
-                if name == "bsad":
-                    ic_sink = None
-        if ic_sink is not None:
-            try:
-                got = ic_sink.rows()
-                interconnectors.merge_trades(got, ic_start, end)
-                log(f"  interconnector trades: {len(got)} rows")
-            except Exception as e:
-                errors.append(f"interconnector trades: {e}")
-                log(f"  interconnector trades: FAILED {e}")
+    lock = threading.Lock()
+
+    def step(name: str, fn) -> None:
+        # a failing source must not discard the others
         try:
-            got = interconnectors.fetch_flows(client, ic_start, end)
-            interconnectors.merge_flows(got, ic_start, end)
-            log(f"  interconnector flows: {len(got)} half-hours")
+            fn()
         except Exception as e:
-            errors.append(f"interconnector flows: {e}")
-            log(f"  interconnector flows: FAILED {e}")
+            with lock:
+                errors.append(f"{name}: {e}")
+            log(f"  {name}: FAILED {e}")
+
+    def daily(name: str, fn, a: date):
+        def go() -> None:
+            log(f"  {name}: fetching {a} .. {end}", flush=True) if log is print else log(f"  {name}: fetching")
+            got = fn(client, a, end)
+            log(f"  {name}: {len(got)} rows")
+            with lock:
+                new.extend(got)
+                windows[name] = a
+        return go
+
+    def bsad_and_trades() -> None:
+        # The interconnector trades are collected from the BSAD download, so they are stored only once it succeeds.
+        daily("bsad", lambda c, s, e: fetch_bsad(c, s, e, ic_sink), ic_start)()
+        step("interconnector trades", trades)
+
+    def trades() -> None:
+        got = ic_sink.rows()
+        interconnectors.merge_trades(got, ic_start, end)
+        log(f"  interconnector trades: {len(got)} rows")
+
+    def flows() -> None:
+        got = interconnectors.fetch_flows(client, ic_start, end)
+        interconnectors.merge_flows(got, ic_start, end)
+        log(f"  interconnector flows: {len(got)} half-hours")
+
+    def boundaries() -> None:
         # Half-hourly boundary flows and limits have their own file. They are day-ahead forecasts, so tomorrow's
         # are usually published too.
-        try:
-            hh_end = end + timedelta(days=1)
-            got = constraints.fetch_boundaries(client, start, hh_end)
-            log(f"  boundaries: {len(got)} half-hours")
-            constraints.merge_hh(got, start, hh_end)
-        except Exception as e:
-            errors.append(f"boundaries: {e}")
-            log(f"  boundaries: FAILED {e}")
+        hh_end = end + timedelta(days=1)
+        got = constraints.fetch_boundaries(client, start, hh_end)
+        log(f"  boundaries: {len(got)} half-hours")
+        constraints.merge_hh(got, start, hh_end)
+
+    # The sources are independent (different files, different endpoints), so they are fetched at the same time:
+    # one after another, the first backfill took about 100 s, almost all of it waiting on the network.
+    steps = [
+        ("neso_purpose", daily("neso_purpose", fetch_purpose, start)),
+        ("eac", daily("eac", fetch_eac, start)),
+        ("bsad", bsad_and_trades),
+        ("thermal", daily("thermal", constraints.fetch_thermal, start)),
+        ("constraint_type", daily("constraint_type", constraints.fetch_types, start)),
+        ("interconnector flows", flows),
+        ("boundaries", boundaries),
         # REMIT outage messages (REMIT tab): incremental by publication time once held.
-        try:
-            remit.ingest_remit(client, log)
-        except Exception as e:
-            errors.append(f"remit: {e}")
-            log(f"  remit: FAILED {e}")
+        ("remit", lambda: remit.ingest_remit(client, log)),
         # Demand Flexibility Service (DFS tab): small files, the current year re-read whole.
-        try:
-            dfs.ingest_dfs(client, log)
-        except Exception as e:
-            errors.append(f"dfs: {e}")
-            log(f"  dfs: FAILED {e}")
+        ("dfs", lambda: dfs.ingest_dfs(client, log)),
+    ]
+    with httpx.Client(headers={"User-Agent": "bmdash/0.1"}, follow_redirects=True) as client, \
+            ThreadPoolExecutor(len(steps)) as pool:
+        for f in [pool.submit(step, name, fn) for name, fn in steps]:
+            f.result()
     # replace what this run fetched, within each source's fetched range; keep everything else
     keep = [r for r in read_all() if not (r[1] in windows and windows[r[1]] <= r[0] <= end)]
     write_all(keep + new)

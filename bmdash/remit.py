@@ -37,6 +37,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from . import store
+from .costs import _timeout
 from .ingest import LONDON, day_bounds_utc, periods_in_day
 
 ELEXON = "https://data.elexon.co.uk/bmrs/api/v1"
@@ -76,7 +77,7 @@ def _get(client: httpx.Client, path: str, params=None) -> list[dict]:
     last: Exception | None = None
     for attempt in range(5):
         try:
-            r = client.get(ELEXON + path, params=params, timeout=60)
+            r = client.get(ELEXON + path, params=params, timeout=_timeout(attempt))
             if r.status_code == 200:
                 body = r.json()
                 return body["data"] if isinstance(body, dict) else body
@@ -85,6 +86,9 @@ def _get(client: httpx.Client, path: str, params=None) -> list[dict]:
             if r.status_code not in (429, 500, 502, 503, 504):
                 raise RuntimeError(f"Elexon {r.status_code} for {path}: {r.text[:200]}")
             last = RuntimeError(f"HTTP {r.status_code}")
+        except httpx.TimeoutException as e:  # hung: retry at once with a longer timeout (see elexon.Elexon)
+            last = e
+            continue
         except httpx.HTTPError as e:
             last = e
         time.sleep(min(20.0, 1.0 * 2 ** attempt))
@@ -161,7 +165,7 @@ def _listing(client: httpx.Client, kind: str, a: datetime, b: datetime, **extra)
         weeks.append((a, min(a + timedelta(days=7), b)))
         a = weeks[-1][1]
     fmt = "%Y-%m-%dT%H:%MZ"
-    with ThreadPoolExecutor(4) as pool:  # a few at a time: a long backfill is about 90 weeks
+    with ThreadPoolExecutor(8) as pool:  # a few at a time: a long backfill is about 90 weeks
         parts = pool.map(lambda w: _get(client, f"/remit/list/{kind}", {"from": w[0].strftime(fmt), "to": w[1].strftime(fmt),
                                                                        "messageType": MSG_TYPE, **extra}), weeks)
         return [e for part in parts for e in part]
@@ -209,7 +213,7 @@ def ingest_remit(client: httpx.Client, log=print) -> int:
     places = unit_places(_get(client, "/reference/bmunits/all")) if want else {}
     new_m, new_s = {}, {}
     batches = [want[i:i + BATCH] for i in range(0, len(want), BATCH)]
-    with ThreadPoolExecutor(4) as pool:
+    with ThreadPoolExecutor(8) as pool:
         got = [m for part in pool.map(lambda ids: _get(client, "/remit", [("messageId", str(x)) for x in ids]), batches) for m in part]
     for m in got:
         p = parse(m, places)

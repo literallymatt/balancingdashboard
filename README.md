@@ -46,7 +46,18 @@ The Data tab in the dashboard can start the same fetch and shows coverage.
   (volumes and cashflows, bid and offer) plus one each for acceptances (BOALF), system prices
   (DISEBSP) and BSAD: about 7 requests per day, down from about 195 when it went period by
   period (90 days: 17,169 requests became about 640). Results are identical to the per-period
-  fetch (checked row by row over 12 days).
+  fetch (checked row by row over 12 days). Eight days are fetched at once (`--parallel-days`;
+  peak memory about 1 GB, 4 days about 0.7 GB).
+- **Hung requests**: about one Elexon request in ten sends nothing back, whatever the
+  concurrency, while the same request sent again answers in seconds. With 7 requests a day, most
+  days used to wait out at least one 60 s timeout. Now a request still running after 8 s is sent
+  a second time and the first answer wins; the first attempt also gives up after 20 s with no
+  data (or 60 s in all, for responses that trickle in), and timeouts double on each retry so slow
+  but real responses still get through. A 30-day ingest went from roughly 10 minutes to under a
+  minute.
+- **System-level refresh** (`costs.py`): the sources (NESO costs, BSAD, constraints, flows,
+  REMIT, DFS) are independent and are fetched at the same time: the first backfill takes about
+  20 s (it was 100 s one after another), a later refresh under 10 s.
 - **Store** (`store.py`): one zstd Parquet file per dataset per settlement day under `data/`,
   written atomically. DuckDB queries them through glob views, so the ingester and the server
   can run at the same time and new days appear without a restart. Days fetched before the data
