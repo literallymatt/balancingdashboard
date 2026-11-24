@@ -2120,7 +2120,7 @@ async function viewInterconnectors(main) {
     </div>
   </div>`;
   aboutData(`
-    <b style="color:var(--ink)">Trades</b>: interconnectors do not take part in the Balancing Mechanism, so NESO balances across them with trades outside it, which Elexon publishes as Balancing Services Adjustment Data (BSAD). <i>Counterparty trades</i> buy or sell energy from a trader for delivery over one link (the trader's interconnector unit, such as IFG-DSKC1 for Danske Commodities on IFA, names the link). <i>SO-SO trades</i> are with the neighbouring system operator (RTE, Statnett, EirGrid, SONI) and are often published without a cost, so they count towards volumes but not prices. <i>SO-flagged</i> trades were for a system reason (for example a constraint) rather than the national energy balance.<br>
+    <b style="color:var(--ink)">Trades</b>: interconnectors do not take part in the Balancing Mechanism, so NESO balances across them with trades outside it, which Elexon publishes as Balancing Services Adjustment Data (BSAD). Half-hours BSAD has not reached yet show the lots NESO has already awarded in its interconnector auctions, as the counterparty <i>NESO auction (awaiting BSAD)</i>. <i>Counterparty trades</i> buy or sell energy from a trader for delivery over one link (the trader's interconnector unit, such as IFG-DSKC1 for Danske Commodities on IFA, names the link). <i>SO-SO trades</i> are with the neighbouring system operator (RTE, Statnett, EirGrid, SONI) and are often published without a cost, so they count towards volumes but not prices. <i>SO-flagged</i> trades were for a system reason (for example a constraint) rather than the national energy balance.<br>
     <b style="color:var(--ink)">Prices</b>: each trade has its own price (pay as bid). The volume-weighted average is cost ÷ volume; highest and lowest are single trades; the clearing price is the marginal trade in each half-hour (the dearest NESO bought, or the cheapest it sold), averaged over the half-hours with trades.${tip('icclear')}<br>
     <b style="color:var(--ink)">Flows</b> are Elexon's half-hourly outturn per interconnector (generation by fuel type), positive into GB. Landing points on the map are approximate and the lines schematic (outline: Natural Earth, public domain).`, { title: 'What the data is', meta: 'icMeta', refresh: 'conRefresh' });
   for (const k of ['imetric', 'isplit', 'ibd', 'imap', 'ipdir', 'iheat']) $('#' + k).onchange = (e) => update({ [k]: e.target.value }, true);
@@ -4127,10 +4127,11 @@ const SOURCES = {
     <ul>
       <li>Planned outages are published in advance, so the tab reaches 28 days ahead.</li>
     </ul>${SHARED_REFRESH}`],
-  interconnectors: ['Elexon BMRS: DISBSAD interconnector trades, FUELHH physical flows', `
+  interconnectors: ['Elexon BMRS: DISBSAD interconnector trades, FUELHH physical flows; NESO interconnector auction results', `
     <h3>Sources</h3>
     <ul>
       <li>${ELX('DISBSAD')}: NESO's trades on the interconnectors, which sit outside the Balancing Mechanism. Counterparty trades carry the trader's interconnector unit as the asset id (its prefix names the link); SO-SO trades are with the neighbouring system operator.</li>
+      <li>${NESO_DP('interconnector-requirement-and-auction-summary-data', 'NESO interconnector requirement and auction summary')}: Elexon publishes a half-hour's BSAD only once it starts, but NESO awards most of these trades hours ahead in its auctions. Lots already awarded for half-hours BSAD has not reached yet (later today, early tomorrow) are shown under the counterparty <i>NESO auction (awaiting BSAD)</i>, at each lot's volume-weighted average price (highest and lowest: its clearing and best prices). The next refresh replaces them with the BSAD trades once published. Lots NESO publishes without a split by link and for more than one link are left out.</li>
       <li>${ELX('FUELHH')}: half-hourly physical flow per link (positive into GB).</li>
       <li>Map outline: Natural Earth (public domain); landing points are approximate.</li>
     </ul>

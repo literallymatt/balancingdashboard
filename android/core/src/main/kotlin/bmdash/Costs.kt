@@ -71,7 +71,9 @@ class CostIngester(private val db: SqlDb) {
                 }
             }
             if (icOk) {
-                try { Interconnectors.writeTrades(db, icSink.rows(), icStart, end) } catch (e: Exception) { errors.add("interconnector trades: ${e.message}") }
+                // Lots NESO has already awarded for the periods BSAD has not published yet (later today, early tomorrow).
+                try { fetchAuctions(neso, icSink, end.plusDays(1)) } catch (e: Exception) { errors.add("interconnector auctions: ${e.message}") }
+                try { Interconnectors.writeTrades(db, icSink.rows(), icStart, end.plusDays(1)) } catch (e: Exception) { errors.add("interconnector trades: ${e.message}") }
             }
             try {
                 Interconnectors.ingestFlows(db, elexon, icStart, end)
@@ -203,6 +205,50 @@ class CostIngester(private val db: SqlDb) {
                 for (cat in listOf("energy", "system", "other")) rows.add(listOf(ds, "bsad", cat, acc.by["$ds|$cat"] ?: 0.0))
         }
         return rows
+    }
+
+    /**
+     * Adds to [sink] the interconnector auction lots NESO has awarded for delivery after the last period BSAD has published
+     * ([Interconnectors.TradeSink.through]) up to the end of [end] (mirrors interconnectors.fetch_auctions). A lot is one
+     * hour on one or more links, in MW: each link's cleared volume becomes MW x 0.5 MWh in each of the hour's two periods, at
+     * the lot's volume-weighted average price (highest and lowest: its clearing and best prices). Lots with no per-link
+     * split that qualify more than one link are left out.
+     */
+    private fun fetchAuctions(api: Elexon, sink: Interconnectors.TradeSink, end: LocalDate) {
+        val (d0, sp0) = sink.through ?: return
+        val lo = Ingester.dayBoundsUtc(LocalDate.parse(d0)).first.plusSeconds(1800L * sp0)  // end of the last published period
+        val hi = Ingester.dayBoundsUtc(end).second
+        val rid = resources(api, Interconnectors.AUCTION_PACKAGE).firstOrNull { it.str("name") == Interconnectors.AUCTION_RESOURCE }?.str("id")
+            ?: throw IllegalStateException("no '${Interconnectors.AUCTION_RESOURCE}' resource")
+        val fmt = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss").withZone(java.time.ZoneOffset.UTC)
+        // Times are UTC. A lot starting before `lo` may still have half-hours to deliver, so select on its end time.
+        val q = "SELECT * FROM \"$rid\" WHERE \"End Time\" > '${fmt.format(lo)}' AND \"Start Time\" < '${fmt.format(hi)}' " +
+            "AND \"Cleared Volume\" > 0 ORDER BY \"_id\""
+        val lots = LinkedHashMap<String, Map<String, Any?>>()
+        for (r in sql(api, q)) lots[r.str("Auction Lot ID") ?: r.str("_id") ?: continue] = r  // a re-published lot replaces the earlier copy
+        for (r in lots.values) {
+            val t0 = runCatching { java.time.LocalDateTime.parse(r.str("Start Time")!!.take(19)).toInstant(java.time.ZoneOffset.UTC) }.getOrNull() ?: continue
+            val t1 = runCatching { java.time.LocalDateTime.parse(r.str("End Time")!!.take(19)).toInstant(java.time.ZoneOffset.UTC) }.getOrNull() ?: continue
+            val sign = if ((r.str("Buy Sell") ?: "").trim().equals("sell", ignoreCase = true)) -1.0 else 1.0
+            val vwa = r.dbl("VWA Price")
+            val prices = listOfNotNull(r.dbl("Clearing Price"), r.dbl("Best Price"), vwa)
+            var perLink = Interconnectors.AUCTION_LINK.mapNotNull { (k, ic) -> r.dbl(k)?.takeIf { it != 0.0 }?.let { ic to it } }.toMap()
+            if (perLink.isEmpty()) {
+                val q1 = (r.str("Qualified IC") ?: "").split("/").map { Interconnectors.AUCTION_IC[it.trim().uppercase()] }
+                if (q1.size != 1 || q1[0] == null) continue
+                perLink = mapOf(q1[0]!! to (r.dbl("Cleared Volume") ?: 0.0))
+            }
+            val so = (r.str("System Flag") ?: "").trim().uppercase() == "T"
+            var t = t0
+            while (t.isBefore(t1)) {
+                val d = t.atZone(Ingester.LONDON).toLocalDate()
+                val sp = java.time.Duration.between(Ingester.dayBoundsUtc(d).first, t).toMinutes() / 30 + 1
+                t = t.plusSeconds(1800)
+                if (!t.isAfter(lo) || d.isAfter(end)) continue
+                for ((ic, mw) in perLink)
+                    sink.addAuction(d.toString(), sp, ic, so, sign * mw * 0.5, vwa, prices.maxOrNull(), prices.minOrNull())
+            }
+        }
     }
 
     // ------------------------------------------------------------ network constraints (see bmdash/constraints.py)
