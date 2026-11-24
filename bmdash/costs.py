@@ -246,8 +246,16 @@ def ingest_costs(start: date | None = None, end: date | None = None, log=print) 
 
     def trades() -> None:
         got = ic_sink.rows()
-        interconnectors.merge_trades(got, ic_start, end)
-        log(f"  interconnector trades: {len(got)} rows")
+        # Lots NESO has already awarded for the periods BSAD has not published yet (later today, early tomorrow).
+        try:
+            ahead = interconnectors.fetch_auctions(client, ic_sink.through, end + timedelta(days=1))
+        except Exception as e:
+            ahead = []
+            with lock:
+                errors.append(f"interconnector auctions: {e}")
+            log(f"  interconnector auctions: FAILED {e}")
+        interconnectors.merge_trades(got + ahead, ic_start, end + timedelta(days=1))
+        log(f"  interconnector trades: {len(got)} rows, plus {len(ahead)} from auctions not yet in BSAD")
 
     def flows() -> None:
         got = interconnectors.fetch_flows(client, ic_start, end)

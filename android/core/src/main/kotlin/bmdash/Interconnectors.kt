@@ -7,6 +7,9 @@ import java.time.LocalDate
  * bmdash/api.py). Interconnectors are not in the Balancing Mechanism: NESO's trades over them are non-BM actions in
  * Elexon BSAD, picked out of the same monthly DISBSAD download as the Total costs figures (see CostIngester.fetchBsad).
  * Physical flows per link come from Elexon FUELHH. Positive volume: NESO buys (into GB); positive flow: import.
+ * Elexon publishes a period's BSAD only once it starts, so the lots NESO has already awarded in its interconnector auctions
+ * for later periods are added from the NESO auction file as party [AUCTION_PARTY] (see CostIngester.fetchAuctions); the
+ * next refresh replaces them with the BSAD trades.
  */
 object Interconnectors {
     // BSAD asset-id prefix (counterparty trades: the trader's interconnector BM unit) -> link.
@@ -28,6 +31,18 @@ object Interconnectors {
         "INTVKL" to "VKL", "INTNSL" to "NSL", "INTEW" to "EWIC", "INTIRL" to "MOYL", "INTGRNL" to "GRNL",
     )
 
+    // NESO auction file (interconnector-requirement-and-auction-summary-data): per-link cleared volume column -> link.
+    const val AUCTION_PACKAGE = "interconnector-requirement-and-auction-summary-data"
+    const val AUCTION_RESOURCE = "Interconnector Requirements and Auction Summary"
+    val AUCTION_LINK = mapOf(
+        "IFA1 Volume" to "IFA", "IFA2 Volume" to "IFA2", "EL Volume" to "ELEC", "BN Volume" to "BRTN",
+        "NEMO Volume" to "NEMO", "VKL Volume" to "VKL",
+    )
+    // Qualified IC code in the auction file -> link (for lots on one link that give no per-link split).
+    val AUCTION_IC = mapOf("IFA1" to "IFA", "IFA" to "IFA", "IFA2" to "IFA2", "EL" to "ELEC", "BN" to "BRTN", "NEMO" to "NEMO", "VKL" to "VKL")
+    // Party shown for awarded auction lots that BSAD has not published yet.
+    const val AUCTION_PARTY = "NESO auction (awaiting BSAD)"
+
     /** BSAD asset id -> (link, kind) for interconnector trades; null for any other non-BM action. */
     fun classify(assetId: String?): Pair<String, String>? {
         val a = (assetId ?: "").trim().uppercase()
@@ -41,8 +56,21 @@ object Interconnectors {
     /** Collects trades from DISBSAD records, summed per settlement period x link x counterparty x kind x SO flag x direction. */
     class TradeSink {
         private val acc = HashMap<List<Any>, DoubleArray>()
+        /** Latest (settlement date, period) with any real BSAD action: later periods are not published yet (every future
+         *  period carries a placeholder row with no asset), so awarded auction lots fill them. */
+        var through: Pair<String, Long>? = null
+            private set
+
+        private fun see(d: String, sp: Long) {
+            val t = through
+            if (t == null || d > t.first || (d == t.first && sp > t.second)) through = d to sp
+        }
 
         fun add(r: Map<String, Any?>) {
+            if (!r.str("assetId").isNullOrEmpty()) {
+                val d = r.str("settlementDate"); val sp = r.long("settlementPeriod")
+                if (d != null && sp != null) see(d, sp)
+            }
             val (ic, kind) = classify(r.str("assetId")) ?: return
             val vol = r.dbl("volume") ?: return
             if (vol == 0.0) return
@@ -58,7 +86,20 @@ object Interconnectors {
             }
         }
 
+        /** One link's share of an awarded auction lot in one settlement period (see CostIngester.fetchAuctions). */
+        fun addAuction(d: String, sp: Long, ic: String, so: Boolean, vol: Double, price: Double?, hi: Double?, lo: Double?) {
+            if (vol == 0.0) return
+            val key = listOf<Any>(d, sp, ic, AUCTION_PARTY, "trade", if (so) 1L else 0L, vol > 0)
+            val x = acc.getOrPut(key) { doubleArrayOf(0.0, 0.0, 0.0, Double.NaN, Double.NaN) }
+            x[0] += vol; x[1] += if (price != null) vol * price else 0.0; x[2] += 1.0
+            if (price != null) {
+                if (hi != null && (x[3].isNaN() || hi > x[3])) x[3] = hi
+                if (lo != null && (x[4].isNaN() || lo < x[4])) x[4] = lo
+            }
+        }
+
         fun merge(o: TradeSink) {
+            o.through?.let { see(it.first, it.second) }
             for ((k, v) in o.acc) {
                 val x = acc.getOrPut(k) { doubleArrayOf(0.0, 0.0, 0.0, Double.NaN, Double.NaN) }
                 for (i in 0..2) x[i] += v[i]
