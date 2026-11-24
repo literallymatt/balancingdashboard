@@ -572,6 +572,39 @@ REV_SQL = """SELECT f.d AS d, f.h AS h, f.ic AS ic, f.flow AS flow, coalesce(t.n
                WHERE settlement_date BETWEEN ? AND ? GROUP BY 1, 2, 3) t
     ON t.d = f.d AND t.h = f.h AND t.ic = f.ic
     ORDER BY 1, 2, 3"""
+# Hours not metered yet (after the last hour with any FUELHH flow) in which NESO has already traded, e.g. the auction lots
+# awarded for later today (see interconnectors.fetch_auctions). With no flow there is no schedule estimate, so no verdict:
+# only whether the hour could break a limit if its trades turn out to be against the schedule.
+REV_UPCOMING_SQL = """SELECT settlement_date AS d, sp + sp % 2 AS h, ic, sum(volume) AS neso,
+    sum(CASE WHEN kind = 'trade' THEN volume ELSE 0 END) AS cp FROM ic_trade
+    WHERE settlement_date BETWEEN ? AND ? AND settlement_date >= ? GROUP BY 1, 2, 3 ORDER BY 1, 2, 3"""
+REV_LAST_FLOW_SQL = "SELECT settlement_date AS d, max(sp) AS sp FROM ic_flow WHERE settlement_date = (SELECT max(settlement_date) FROM ic_flow) GROUP BY 1"
+
+
+def rev_upcoming(rows: list[dict], last: dict | None) -> tuple[list[dict], list[dict]]:
+    """Link-hours after the last metered hour (`last`: its settlement date and period), and the same summed per hour."""
+    after = None
+    if last and last.get("d") is not None:
+        ld = last["d"].isoformat() if isinstance(last["d"], date) else str(last["d"])
+        after = (ld, int(last["sp"]) + int(last["sp"]) % 2)
+    links, hours = [], {}
+    for r in rows:
+        d = r["d"].isoformat() if isinstance(r["d"], date) else str(r["d"])
+        if after is not None and (d, int(r["h"])) <= after:
+            continue
+        cp, neso = float(r["cp"] or 0), float(r["neso"] or 0)
+        restricted = d >= REV_FROM and r["ic"] in REV_LINKS
+        row = {"d": d, "hour": int(r["h"]) // 2 - 1, "ic": r["ic"], "neso": neso, "cp": cp,
+               "could_over": restricted and abs(cp) > REV_LINK_CAP + REV_TOL}
+        links.append(row)
+        h = hours.setdefault((d, row["hour"]), {"d": d, "hour": row["hour"], "cp": 0.0, "n_could_over": 0, "links": []})
+        if r["ic"] in REV_LINKS:
+            h["cp"] += abs(cp)
+        h["n_could_over"] += row["could_over"]
+        h["links"].append(r["ic"])
+    for h in hours.values():
+        h["could_total_over"] = h["d"] >= REV_FROM and h["cp"] > REV_TOTAL_CAP + REV_TOL
+    return links, list(hours.values())
 
 
 def _rev_bucket(d: str, hour: int, bucket: str) -> str:
@@ -641,7 +674,10 @@ def ic_reversals(start: date = Query(alias="from"), end: date = Query(alias="to"
         "max_link_against": max((e["against"] for e in events if e["d"] >= REV_FROM and e["ic"] in REV_LINKS), default=0.0),
     }
     events.sort(key=lambda e: (-e["over"], -e["against"], e["d"], e["hour"]))
-    return {"rules": {"from": REV_FROM, "link_cap": REV_LINK_CAP, "total_cap": REV_TOTAL_CAP, "min_mw": REV_MIN_MW, "links": list(REV_LINKS)},
+    last = q(REV_LAST_FLOW_SQL)
+    upcoming, upcoming_hours = rev_upcoming(q(REV_UPCOMING_SQL, [start, end, last[0]["d"] if last else start]), last[0] if last else None)
+    return {"upcoming": upcoming, "upcoming_hours": upcoming_hours,
+            "rules": {"from": REV_FROM, "link_cap": REV_LINK_CAP, "total_cap": REV_TOTAL_CAP, "min_mw": REV_MIN_MW, "links": list(REV_LINKS)},
             "summary": summary, "series": sorted(series.values(), key=lambda s: (s["t"], s["ic"])), "hours": hlist,
             "events": events[:1000], "n_events": len(events), "detail": detail}
 

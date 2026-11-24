@@ -741,7 +741,8 @@ const GLOSS = {
   icflow: ['Physical flow', 'What actually flowed through each interconnector, from Elexon\'s half-hourly generation by fuel type: positive into GB (import), negative out of GB (export). NESO\'s trades change these flows from what the market scheduled.'],
   icrev: ['Flow reversals', 'NESO balances GB partly by buying and selling energy over the interconnectors. If a link is exporting and NESO buys more than the export, the flow turns round and GB imports instead (and the other way when it sells). A link-hour counts as reversed when the flow without NESO and the actual flow point opposite ways, each by at least 50 MW.'],
   icrevest: ['Estimated schedule', 'The day-ahead schedule on each link is not published, so it is estimated as the flow NESO did not cause: the metered flow minus NESO\'s net trades on that link in the hour. The interconnector units\' notifications already include NESO\'s trades, so they cannot be used instead. The estimate also includes the intraday market\'s trades. A trade is against the schedule when it points the other way to this estimate; hours where the estimate is under 50 MW either way are not counted, because the direction is unclear.'],
-  icrevcap: ['The 300 MW / 1,500 MW limit', 'From 20 May 2026 NESO may trade at most 1,500 MW per hour within day against the day-ahead direction across IFA, IFA2, ElecLink, Viking Link, BritNed and Nemo Link, and at most 300 MW on any one of them (NESO market notice, 14 May 2026; a short-term measure until the end of 2026, agreed with the EU system operators). Trading with the day-ahead direction is not limited, and North Sea Link and the Irish links are not covered. Only counterparty trades are counted.'],
+  icrevup: ['Trades already awarded', 'NESO awards most of its interconnector trades hours ahead in its auctions, so later hours today already have trades. The flow for an hour is only published once it has passed, and the day-ahead schedule is not published at all, so these hours cannot be judged yet: whether the trades are against the schedule is unknown. A link over 300 MW, or an hour over 1,500 MW across the six links, is a breach only if those trades turn out to be against the schedule; trades with it are not limited. The next refresh after each hour gives it a verdict above.'],
+  icrevcap: ['The 300 MW / 1,500 MW limit', 'From 20 May 2026 NESO may trade at most 1,500 MW per hour within day against the day-ahead direction across IFA, IFA2, ElecLink, Viking Link, BritNed and Nemo Link, and at most 300 MW on any one of them (NESO market notice, 14 May 2026, agreed with the EU system operators; first planned to end with 2026, extended until further notice on 23 November 2026). Trading with the day-ahead direction is not limited, and North Sea Link and the Irish links are not covered. Only counterparty trades are counted.'],
   dfs: ['Demand Flexibility Service', 'NESO pays households and businesses, through registered providers (suppliers and aggregators), to shift when they use electricity for set half-hours: to use less at busy times (turn down) or, since April 2026, more when there is spare wind (turn up). Each event, NESO states how much it needs; providers bid volumes at a price and NESO accepts them, cheapest first.'],
   dfstag: ['Direction and reason', 'Turn-down (Downwards) events ask for less demand, turn-up (Upwards) events for more. NESO tags each event Energy, when it is for the national balance between supply and demand, or System, when it is for a network reason such as a constraint. The 2025/26 archive does not say, so those events show as "Not stated".'],
   dfstest: ['Test events', 'NESO occasionally runs test events to check providers can respond. They are left out unless this is ticked.'],
@@ -2740,13 +2741,17 @@ async function viewReversals(main) {
       <div class="controls"><label class="small muted">Measure ${select('rvm', Object.entries(RVM), measure)}</label></div></div>
     <div class="chart" id="rvTime"></div>
   </div>
+  <div class="card" style="margin-top:14px" id="rvUpCard" hidden>
+    <div class="card-head"><div><h2>Coming up: trades already awarded${tip('icrevup')}</h2><div class="sub" id="rvUpNote"></div></div></div>
+    <div id="rvUp"></div>
+  </div>
   <div class="card" style="margin-top:14px">
     <div class="card-head"><div><h2>The hours</h2><div class="sub" id="rvTableNote"></div></div>
       <div class="controls"><label class="small muted">Show ${select('rvt', RVT, only)}</label></div></div>
     <div id="rvTable"></div>
   </div>`;
   aboutData(`
-    <b style="color:var(--ink)">The rule</b>: NESO market notice <i>Interconnector trading restrictions for NESO</i> (14 May 2026, NESO Data Portal): from 20 May 2026, within-day trading in the opposite direction to the day-ahead schedule is limited to 1,500 MW per hour across IFA, IFA2, ElecLink, Viking Link, BritNed and Nemo Link, with at most 300 MW on any one of them, as a short-term measure until the end of 2026. North Sea Link and the Irish links are not covered, so they show reversals but never breaches.<br>
+    <b style="color:var(--ink)">The rule</b>: NESO market notice <i>Interconnector trading restrictions for NESO</i> (14 May 2026, NESO Data Portal): from 20 May 2026, within-day trading in the opposite direction to the day-ahead schedule is limited to 1,500 MW per hour across IFA, IFA2, ElecLink, Viking Link, BritNed and Nemo Link, with at most 300 MW on any one of them. It was meant as a short-term measure until the end of 2026; NESO's update of 23 November 2026 keeps it in place until further notice. North Sea Link and the Irish links are not covered, so they show reversals but never breaches.<br>
     <b style="color:var(--ink)">Each hour, each link</b>: the metered flow (Elexon FUELHH, averaged over the hour's two half-hours) minus NESO's net trades on the link (Elexon BSAD, MWh over the hour = average MW) gives the flow without NESO, the estimated schedule. NESO <i>reversed</i> the flow when the two point opposite ways and both are at least 50 MW. A counterparty trade is <i>against the schedule</i> when it points the other way to the estimated schedule; SO-SO trades are agreed with the neighbouring operator, so they are not counted. A link is <i>over the limit</i> when its trades against the schedule exceed 300 MW (1 MW is allowed for rounding); an hour is over the total limit when they exceed 1,500 MW across the six links.<br>
     <b style="color:var(--ink)">Limits of the estimate</b>: the flow without NESO also contains the intraday market's own trades, so it is not exactly the day-ahead schedule; hours where it is under 50 MW either way are never counted. The hourly volumes match NESO's published interconnector auction results, and NESO's trades stop at exactly 300 MW on the links this method marks as running against the schedule, which supports it.`, { title: 'How this is worked out' });
   for (const k of ['rvm', 'rvt']) $('#' + k).onchange = (e) => update({ [k]: e.target.value }, true);
@@ -2769,6 +2774,7 @@ async function viewReversals(main) {
   rvHeat($('#rvHeat'), data, day, pickDay);
   rvTime($('#rvTime'), data.series, bucket, measure);
   rvTable($('#rvTable'), data, only, pickDay);
+  rvUpcoming(data);
   await loading($('#rvDay'), () => rvDay($('#rvDay'), day, worst));
 }
 
@@ -2922,6 +2928,27 @@ function rvTime(el, series, bucket, measure) {
     const [i] = c.convertFromPixel({ seriesIndex: 0 }, [e.offsetX, e.offsetY]);
     if (i >= 0 && i < cats.length) drillTime(String(cats[i]), bucket);
   });
+}
+
+/** Hours not metered yet in which NESO has already traded (mostly auction lots awarded for later today): no schedule
+ *  estimate yet, so no verdict, only whether the hour could break a limit if its trades turn out to be against the schedule. */
+function rvUpcoming(data) {
+  const up = data.upcoming || [], card = $('#rvUpCard');
+  card.hidden = !up.length;
+  if (!up.length) return;
+  const rules = data.rules, byHour = new Map((data.upcoming_hours || []).map((h) => [`${h.d}|${h.hour}`, h]));
+  const hrs = [...byHour.values()], nLink = up.filter((r) => r.could_over).length, nTotal = hrs.filter((h) => h.could_total_over).length;
+  $('#rvUpNote').textContent = `${nf(0).format(hrs.length)} hour${hrs.length === 1 ? '' : 's'} not metered yet. These get a verdict once the flow is published (refresh after the hour). `
+    + `${nf(0).format(nLink)} link-hour${nLink === 1 ? '' : 's'} over ${nf(0).format(rules.link_cap)} MW and ${nf(0).format(nTotal)} hour${nTotal === 1 ? '' : 's'} over ${nf(0).format(rules.total_cap)} MW in total would breach only if those trades are against the schedule.`;
+  const rows = up.map((r) => ({ ...r, when: `${r.d}T${String(r.hour).padStart(2, '0')}`, name: icName(r.ic), tot: byHour.get(`${r.d}|${r.hour}`) }));
+  table($('#rvUp'), [
+    { key: 'when', label: 'Hour', html: (r) => esc(hourLabel(r.d, r.hour)) },
+    { key: 'name', label: 'Link', html: (r) => `<span class="tag"><span class="dot" style="background:${css(IC[r.ic]?.col || '--other')}"></span>${esc(r.name)}</span>` },
+    { key: 'neso', label: 'NESO traded', num: true, fmt: (v) => `${v >= 0 ? 'bought' : 'sold'} ${mwc(Math.abs(v))}` },
+    { key: 'cp', label: 'Counterparty trades', num: true, fmt: (v) => (v ? mwc(Math.abs(v)) : '–'), tip: 'icrevcap' },
+    { key: 'could_over', label: `Over ${nf(0).format(rules.link_cap)} MW if against`, html: (r) => (r.could_over ? '<b>possible</b>' : '') },
+    { key: 'tot', label: `Hour over ${nf(0).format(rules.total_cap)} MW if against`, html: (r) => (r.tot?.could_total_over ? `<span class="small">possible (${mwc(r.tot.cp)})</span>` : '') },
+  ], rows, { limit: 300 });
 }
 
 /** The hours behind it all, worst first; click one to show its day and link above. */
@@ -4140,11 +4167,12 @@ const SOURCES = {
       <li>Positive volume is energy NESO bought (into GB).</li>
       <li>Trades are stored summed per settlement period, link, counterparty, kind, SO flag and direction, keeping each row's highest and lowest single-trade price.</li>
     </ul>${SHARED_REFRESH}`],
-  icrev: ['Derived from the Interconnectors tab data (Elexon DISBSAD trades and FUELHH flows); NESO market notice of 14 May 2026', `
+  icrev: ['Derived from the Interconnectors tab data (Elexon DISBSAD trades and FUELHH flows); NESO market notices of 14 May and 23 November 2026', `
     <h3>Sources</h3>
     <ul>
       <li>${ELX('DISBSAD')} (NESO's interconnector trades) and ${ELX('FUELHH')} (metered flow), as stored for the Interconnectors tab; nothing extra is downloaded.</li>
-      <li>The limits: NESO market notice <i>Interconnector trading restrictions for NESO</i> (14 May 2026, NESO Data Portal).</li>
+      <li>The limits: NESO market notice <i>Interconnector trading restrictions for NESO</i> (14 May 2026) and its update of 23 November 2026, which keeps them until further notice (${NESO_DP('interconnector-requirement-and-auction-summary-data', 'NESO Data Portal')}).</li>
+      <li>Hours not metered yet: NESO's trades already awarded in its interconnector auctions (see the Interconnectors tab's sources), shown with no verdict until the flow is published.</li>
     </ul>${SHARED_REFRESH}`],
   dfs: ['NESO Data Portal: Demand Flexibility Service utilisation reports and service requirements; Elexon MID market prices', `
     <h3>Sources</h3>
