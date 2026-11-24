@@ -289,6 +289,38 @@ object Interconnectors {
                    WHERE settlement_date BETWEEN ? AND ? GROUP BY 1, 2, 3) t
         ON t.d = f.d AND t.h = f.h AND t.ic = f.ic
         ORDER BY 1, 2, 3"""
+    // Hours not metered yet in which NESO has already traded (mirrors api.REV_UPCOMING_SQL / api.rev_upcoming).
+    private const val REV_UPCOMING_SQL = """SELECT settlement_date AS d, sp + sp % 2 AS h, ic, sum(volume) AS neso,
+        sum(CASE WHEN kind = 'trade' THEN volume ELSE 0 END) AS cp FROM ic_trade
+        WHERE settlement_date BETWEEN ? AND ? AND settlement_date >= ? GROUP BY 1, 2, 3 ORDER BY 1, 2, 3"""
+    private const val REV_LAST_FLOW_SQL =
+        "SELECT settlement_date AS d, max(sp) AS sp FROM ic_flow WHERE settlement_date = (SELECT max(settlement_date) FROM ic_flow) GROUP BY 1"
+
+    /** Link-hours after the last metered hour, and the same summed per hour: no verdict, only whether a limit could be broken. */
+    private fun upcoming(db: SqlDb, from: String, to: String): Pair<List<Map<String, Any?>>, List<Map<String, Any?>>> {
+        val last = db.query(REV_LAST_FLOW_SQL).firstOrNull()
+        val lastD = last?.str("d")?.take(10)
+        val lastH = last?.long("sp")?.let { it + it % 2 }
+        val links = ArrayList<Map<String, Any?>>()
+        val hours = LinkedHashMap<String, MutableMap<String, Any?>>()
+        for (r in db.query(REV_UPCOMING_SQL, listOf(from, to, lastD ?: from))) {
+            val d = r.str("d")!!.take(10)
+            val h = r.long("h") ?: continue
+            if (lastD != null && lastH != null && (d < lastD || (d == lastD && h <= lastH))) continue
+            val ic = r.str("ic")!!
+            val cp = r.dbl("cp") ?: 0.0
+            val couldOver = d >= REV_FROM && ic in REV_LINKS && Math.abs(cp) > REV_LINK_CAP + REV_TOL
+            val hour = h.toInt() / 2 - 1
+            links.add(linkedMapOf("d" to d, "hour" to hour, "ic" to ic, "neso" to (r.dbl("neso") ?: 0.0), "cp" to cp, "could_over" to couldOver))
+            val x = hours.getOrPut("$d|$hour") { linkedMapOf("d" to d, "hour" to hour, "cp" to 0.0, "n_could_over" to 0, "links" to ArrayList<String>()) }
+            if (ic in REV_LINKS) x["cp"] = (x["cp"] as Double) + Math.abs(cp)
+            if (couldOver) x["n_could_over"] = (x["n_could_over"] as Int) + 1
+            @Suppress("UNCHECKED_CAST")
+            (x["links"] as ArrayList<String>).add(ic)
+        }
+        for (x in hours.values) x["could_total_over"] = (x["d"] as String) >= REV_FROM && (x["cp"] as Double) > REV_TOTAL_CAP + REV_TOL
+        return links to hours.values.toList()
+    }
 
     private fun revBucket(d: String, hour: Int, bucket: String): String = when (bucket) {
         "hour" -> "${d}T${"%02d".format(minOf(hour, 23))}:00:00"
@@ -347,7 +379,9 @@ object Interconnectors {
         )
         val sorted = events.sortedWith(compareBy<Map<String, Any?>>({ if (it["over"] == true) 0 else 1 }, { -(it["against"] as Double) }, { it["d"] as String }, { it["hour"] as Int }))
         val hlist = hours.values.filter { (it["against"] as Double) != 0.0 || (it["flips"] as Int) > 0 || (it["n_over"] as Int) > 0 }
+        val (up, upHours) = upcoming(db, from, to)
         return mapOf(
+            "upcoming" to up, "upcoming_hours" to upHours,
             "rules" to mapOf("from" to REV_FROM, "link_cap" to REV_LINK_CAP, "total_cap" to REV_TOTAL_CAP, "min_mw" to REV_MIN_MW, "links" to REV_LINKS),
             "summary" to summary, "series" to series.values.sortedWith(compareBy({ it["t"] as String }, { it["ic"] as String })), "hours" to hlist,
             "events" to sorted.take(1000), "n_events" to events.size, "detail" to detail,
